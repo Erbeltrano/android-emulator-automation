@@ -3,12 +3,10 @@ import sys
 import time
 import random
 import shutil
-import platform
-import mss
+import subprocess
 import numpy as np
 import cv2
 import pytesseract
-import pyautogui
 import requests   # per Telegram
 
 # ==========================
@@ -52,159 +50,193 @@ def send_telegram(message: str):
 # ==========================
 
 def find_tesseract_cmd():
-    """Trova l'eseguibile di Tesseract sia su Windows che su macOS."""
-    # 1) Se è già nel PATH (tipico su Mac con Homebrew), usa quello
+    """Trova l'eseguibile di Tesseract."""
     found = shutil.which("tesseract")
     if found:
         return found
 
-    # 2) Percorsi comuni in base al sistema operativo
-    system = platform.system()
-    if system == "Windows":
-        candidates = [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        ]
-    else:  # macOS / Linux
-        candidates = [
-            "/opt/homebrew/bin/tesseract",   # Homebrew su Apple Silicon (M1/M2/M3)
-            "/usr/local/bin/tesseract",      # Homebrew su Mac Intel
-            "/usr/bin/tesseract",
-        ]
-
+    candidates = [
+        "/opt/homebrew/bin/tesseract",   # Homebrew su Apple Silicon (M1/M2/M3)
+        "/usr/local/bin/tesseract",      # Homebrew su Mac Intel
+        "/usr/bin/tesseract",
+    ]
     for path in candidates:
-        if shutil.os.path.exists(path):
+        if os.path.exists(path):
             return path
 
     raise FileNotFoundError(
-        "Tesseract non trovato. Su Mac installalo con: brew install tesseract\n"
+        "Tesseract non trovato. Installalo con: brew install tesseract\n"
         "Poi verifica il percorso con: which tesseract"
     )
 
 
 pytesseract.pytesseract.tesseract_cmd = find_tesseract_cmd()
-pyautogui.FAILSAFE = True
 
-# --- REGIONE OCR CORRETTA (calibrata manualmente sul Mac, allargata per numeri >1 milione) ---
+# ==========================
+# CONFIGURAZIONE ADB (BlueStacks)
+# ==========================
+# Il bot non legge/clicca più lo schermo reale del Mac: pilota l'emulatore
+# Android via ADB (screencap + input tap/swipe). Per questo BlueStacks può
+# restare minimizzato o nascosto: il bot funziona lo stesso.
+#
+# Requisito: in BlueStacks vai su Impostazioni -> Avanzate -> abilita
+# "Android Debug Bridge".
+
+
+def find_adb_cmd():
+    """Trova l'eseguibile adb: prima nel PATH, poi quello incluso in BlueStacks."""
+    found = shutil.which("adb")
+    if found:
+        return found
+
+    candidates = [
+        "/Applications/BlueStacks.app/Contents/MacOS/hd-adb",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    raise FileNotFoundError(
+        "adb non trovato. Installa Android Platform Tools (brew install "
+        "android-platform-tools) oppure verifica che BlueStacks sia in /Applications."
+    )
+
+
+ADB_CMD = find_adb_cmd()
+
+
+def adb(*args, device=None, timeout=15):
+    """Esegue un comando adb e ritorna il CompletedProcess (stdout/stderr in bytes)."""
+    cmd = [ADB_CMD]
+    if device:
+        cmd += ["-s", device]
+    cmd += list(args)
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, check=True)
+
+
+def find_device():
+    """Ritorna il primo device Android connesso via adb (es. l'istanza BlueStacks)."""
+    result = adb("devices")
+    lines = result.stdout.decode(errors="ignore").strip().splitlines()[1:]
+    for line in lines:
+        if line.strip().endswith("device"):
+            return line.split()[0]
+
+    raise RuntimeError(
+        "Nessun device ADB trovato. Verifica che BlueStacks sia avviato e che "
+        "'Android Debug Bridge' sia abilitato in Impostazioni -> Avanzate."
+    )
+
+
+DEVICE = find_device()
+print(f"[ADB] Device connesso: {DEVICE}")
+
+
+def adb_screenshot():
+    """Cattura lo schermo dell'emulatore e ritorna un array numpy BGR (OpenCV)."""
+    result = adb("exec-out", "screencap", "-p", device=DEVICE)
+    img_array = np.frombuffer(result.stdout, dtype=np.uint8)
+    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise RuntimeError("Screenshot ADB non decodificabile (screencap fallito?).")
+    return frame
+
+
+def adb_tap(x, y):
+    adb("shell", "input", "tap", str(x), str(y), device=DEVICE)
+
+
+def adb_swipe(x1, y1, x2, y2, duration_ms=600):
+    adb(
+        "shell", "input", "swipe",
+        str(x1), str(y1), str(x2), str(y2), str(duration_ms),
+        device=DEVICE,
+    )
+
+
+# ==========================
+# COORDINATE (calibrate dal vivo su BlueStacks, screenshot 1920x1080)
+# ==========================
+# A differenza della vecchia versione Mac, qui non c'e' una dashboard fissa
+# da leggere in continuazione: il flusso e' quello del matchmaking di Clash
+# of Clans (cerca avversario -> valuta bottino -> attacca o salta -> risultato
+# -> torna al villaggio), quindi tutte le coordinate/sequenze sono state
+# riscritte per questo flusso.
+
+ATTACK_BUTTON = (135, 1020)          # "Attacco!" nel villaggio
+FIND_MATCH_BUTTON = (335, 800)       # "Trova una partita" (tab Multigiocatore)
+CONFIRM_ATTACK_BUTTON = (1697, 960)  # "Attacco!" nella schermata riepilogo esercito
+SKIP_BUTTON = (1745, 780)            # "Avanti" - scarta l'avversario e ricerca
+RETURN_HOME_BUTTON = (955, 985)      # "Torna al villaggio" a fine battaglia
+
+# Regione "Bottino disponibile" (elisir) nella schermata di scouting,
+# prima che la battaglia inizi. Formato (left, top, width, height).
 OCR_REGION = {
-    "left": 78,
-    "top": 157,
-    "width": 150,
-    "height": 30
+    "left": 88,
+    "top": 203,
+    "width": 180,
+    "height": 30,
 }
 
-# --- PRIMA SEQUENZA DI CLICK (scalata per Mac 1440x900, originale Windows 2560x1440) ---
-CLICK_SEQUENCE = [
-    (180, 804),   # 1 --- 360 primo slot- 
-    (762, 699),  # 2
-    (843,  623),  # 3
-    (949,  556),  # 4
-    (1031,  488),  # 5
-    (1106,  421),  # 6
-    (1158,  379),  # 7
-    (1213,  332),  # 8
-    (1284,  257),  # 9
-    (1031,  488),  # 5
-    (1031,  488),  # 5
-    (259, 804),   # 1 --- 460 secondo slot- 
-    (762, 699),  # 2
-    (843,  623),  # 3
-    (949,  556),  # 4
-    (1031,  488),  # 5
-    (1106,  421),  # 6
-    (1158,  379),  # 7
-    (1213,  332),  # 8
-    (1284,  257),  # 9
-    (1031,  488),  # 5
-    (1031,  488),  # 5
-    (504,  720),  # 10 - 896 selezione regina
-    (1036,  492),  # 11 - posizione regina
-    (504,  720),  # 10 - abilità regina
-    (618, 720),  # 12
-    (1032,  495),  # 13
-    (729,  750),  # 14 - gran sorvegliante
-    (1036,  492),  # 15 - posizione gran sorvegliante
-    (842,  740),  # 14 - gran sorvegliante
-    (1036,  492),  # 15 - posizione gran sorvegliante
-    (842,  740),  # 14 - gran sorvegliante
-    (923,  340),  # 15 - posizione gran sorvegliante
-    (805,  439),  # 15 - posizione gran sorvegliante
-   
-	
+# Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
+# I primi TROOP_SLOTS sono le truppe (drago, barile, macchina d'assedio, ...),
+# gli HERO_SLOTS gli eroi (regina, re, gran sorvegliante, campionessa).
+# Adatta il numero/ordine se il tuo esercito e' diverso.
+TROOP_BAR_Y = 975
+TROOP_SLOTS = [215, 340, 515]
+HERO_SLOTS = [655, 785, 915, 1045]
+
+# Zona di schieramento: tutte le truppe vengono piazzate qui, in un unico
+# passaggio (lato destro/basso della base, quello testato con successo:
+# 93% danno, 2 stelle). Non spostare truppe in zone diverse ad ogni run.
+DEPLOY_POINTS = [
+    (1300, 550), (1350, 500), (1400, 450), (1450, 400), (1500, 350), (1550, 300),
+    (1400, 600), (1350, 650), (1300, 700), (1250, 720), (1200, 740),
+    (1150, 760), (1100, 780), (1050, 800), (1000, 820),
 ]
+TAPS_PER_TROOP = 10  # oltre alle truppe disponibili i tap in eccesso non fanno nulla
+HERO_DEPLOY_POINT = (1350, 550)
 
-# --- SECONDA SEQUENZA DI CLICK (scalata per Mac) ---
-SECOND_CLICK_SEQUENCE = [
-    (105, 673),   # A
-    (870, 591),   # B
-    (713, 769),  # C
-    (98, 779),  # D
-    (214, 669),  # E
-    (1227, 803),  # F
-]
+THRESHOLD = 800000          # elisir minimo saccheggiabile per attaccare
+MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
+CLICK_INTERVAL = 0.15
+BATTLE_START_MAX_WAIT = 35.0   # attesa massima che la battaglia inizi dopo l'accettazione
+BATTLE_DURATION_WAIT = (75.0, 100.0)  # attesa (min, max) per lasciare svolgere la battaglia
 
-# --- TERZA SEQUENZA DI CLICK (scalata per Mac, T3 ricalibrato manualmente) ---
-THIRD_CLICK_SEQUENCE = [
-    (92, 789),   # T1
-    (216, 667),  # T2
-    (1275, 768),  # T3 - ricalibrato: riattiva attacco
-]
-
-# --- PUNTO DA CLICCARE QUANDO value < THRESHOLD (scalato per Mac) ---
-LOW_VALUE_POINT = (1307, 641)
-
-# --- PUNTO DA CLICCARE QUANDO NON LEGGE NUMERI PER TROPPO TEMPO (scalato per Mac) ---
-NO_NUMBER_CLICK_POINT = (105, 673)  # come richiesto
-
-THRESHOLD = 800000
-POLL_INTERVAL = 0.7
-CLICK_INTERVAL = 0.20
-TRIGGER_COOLDOWN = 3.0
-THIRD_CLICK_INTERVAL = 0.5   # terza sequenza più lenta
-
-NO_NUMBER_TIMEOUT = 80.0     # secondi senza numero prima di reagire
 SESSION_DURATION = 50 * 60   # 50 minuti
-
-# --- SCROLL TRAMITE DRAG (scalato per Mac) ---
-DRAG_START = (563, 500)  # punto di partenza del drag
-DRAG_END   = (563, 250)  # punto finale del drag
-DRAG_DURATION = 0.6       # durata del drag
-
-# --- CONTATORE DEI TRIGGER SOPRA SOGLIA ---
+MAX_TRIGGERS = 20            # numero di attacchi dopo cui il bot si ferma da solo
 trigger_count = 0
-MAX_TRIGGERS = 20
 
 
 # ==========================
 # FUNZIONI
 # ==========================
 
-def read_number_from_dashboard():
-    with mss.MSS() as sct:
-        sct_img = sct.grab(OCR_REGION)
-        frame = np.array(sct_img)
+def read_available_loot():
+    """Legge il valore di 'Bottino disponibile' (elisir) nella schermata di
+    scouting. Il testo del gioco e' bianco con bordo nero su uno sfondo
+    fotografico molto rumoroso: invece di un semplice threshold in scala di
+    grigi, isoliamo i pixel bianchi in HSV (bassa saturazione, alta
+    luminosita'), che si e' rivelato molto piu' affidabile nei test dal vivo.
+    """
+    frame = adb_screenshot()
+    l, t = OCR_REGION["left"], OCR_REGION["top"]
+    w, h = OCR_REGION["width"], OCR_REGION["height"]
+    crop = frame[t:t + h, l:l + w]
 
-    # 1) Scala di grigi
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    lower = np.array([0, 0, 180])
+    upper = np.array([180, 60, 255])
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = cv2.resize(mask, None, fx=5.0, fy=5.0, interpolation=cv2.INTER_CUBIC)
+    mask = cv2.copyMakeBorder(mask, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=0)
 
-    # 2) Ingrandisci un po' il testo (aiuta Tesseract)
-    gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+    cv2.imwrite("debug.png", mask)
 
-    # 3) Leggero blur per togliere rumore
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-
-    # 4) Threshold automatico (Otsu)
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # Debug
-    cv2.imwrite("debug.png", thresh)
-
-    # 5) Config OCR: solo numeri, psm 7 (una sola riga)
     ocr_config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789"
-    text = pytesseract.image_to_string(thresh, config=ocr_config)
+    text = pytesseract.image_to_string(mask, config=ocr_config)
 
     digits = "".join(ch for ch in text if ch.isdigit())
-
     if not digits:
         return None
 
@@ -214,204 +246,151 @@ def read_number_from_dashboard():
         return None
 
 
-def scroll_down_by_drag():
-    """Simula uno scroll trascinando il mouse."""
-    print("[ACTION] Scroll tramite drag...")
-    pyautogui.moveTo(DRAG_START[0], DRAG_START[1])
-    time.sleep(0.2)
-    pyautogui.dragTo(DRAG_END[0], DRAG_END[1], duration=DRAG_DURATION, button='left')
-    time.sleep(2.0)  # pausa dopo lo scroll
-
-
-def execute_click_sequence_full():
-    """Sequenza completa: scroll + prima + seconda + (attesa) + terza."""
-    scroll_down_by_drag()
-
-    print("[ACTION] Eseguo PRIMA sequenza di click...")
-    for i, (x, y) in enumerate(CLICK_SEQUENCE, start=1):
-        print(f"  -> Click {i} su ({x}, {y})")
-        pyautogui.click(x=x, y=y)
-        time.sleep(CLICK_INTERVAL)
-    print("[ACTION] Prima sequenza completata.")
-
-    wait_time = random.uniform(50, 70)
-    print(f"[WAIT] Attendo circa {wait_time:.1f} secondi prima della SECONDA sequenza...")
-    time.sleep(wait_time)
-
-    print("[ACTION] Eseguo SECONDA sequenza di click...")
-    for i, (x, y) in enumerate(SECOND_CLICK_SEQUENCE, start=1):
-        print(f"  -> Seconda seq - Click {i} su ({x}, {y})")
-        pyautogui.click(x=x, y=y)
-        time.sleep(CLICK_INTERVAL)
-    print("[ACTION] Seconda sequenza completata.")
-
-    time.sleep(3)
-
-    print("[ACTION] Eseguo TERZA sequenza di click...")
-    for i, (x, y) in enumerate(THIRD_CLICK_SEQUENCE, start=1):
-        print(f"  -> Terza seq - Click {i} su ({x}, {y})")
-        pyautogui.click(x=x, y=y)
-        time.sleep(THIRD_CLICK_INTERVAL)
-    print("[ACTION] Terza sequenza completata.")
-
-
-def execute_click_sequence_without_third():
-    """Sequenza finale: scroll + prima + seconda (senza terza)."""
-    scroll_down_by_drag()
-
-    print("[ACTION] (FINALE) Eseguo PRIMA sequenza di click...")
-    for i, (x, y) in enumerate(CLICK_SEQUENCE, start=1):
-        print(f"  -> Click {i} su ({x}, {y})")
-        pyautogui.click(x=x, y=y)
-        time.sleep(CLICK_INTERVAL)
-    print("[ACTION] (FINALE) Prima sequenza completata.")
-
-    wait_time = random.uniform(50, 70)
-    print(f"[WAIT] (FINALE) Attendo circa {wait_time:.1f} secondi prima della SECONDA sequenza...")
-    time.sleep(wait_time)
-
-    print("[ACTION] (FINALE) Eseguo SECONDA sequenza di click...")
-    for i, (x, y) in enumerate(SECOND_CLICK_SEQUENCE, start=1):
-        print(f"  -> Seconda seq FINALE - Click {i} su ({x}, {y})")
-        pyautogui.click(x=x, y=y)
-        time.sleep(CLICK_INTERVAL)
-    print("[ACTION] (FINALE) Seconda sequenza completata (NESSUNA TERZA).")
-
-
-def execute_second_and_third_sequence():
-    """(NON PIÙ USATA, ma la lascio se ti serve in futuro)."""
-    print("[NO-NUMBER] Nessun numero letto da tempo -> SECONDA + TERZA sequenza")
-
-    print("[ACTION] (NO-NUMBER) Eseguo SECONDA sequenza di click...")
-    for i, (x, y) in enumerate(SECOND_CLICK_SEQUENCE, start=1):
-        print(f"  -> Seconda seq (no-number) - Click {i} su ({x}, {y})")
-        pyautogui.click(x=x, y=y)
-        time.sleep(CLICK_INTERVAL)
-    print("[ACTION] (NO-NUMBER) Seconda sequenza completata.")
-
-    time.sleep(3)
-
-    print("[ACTION] (NO-NUMBER) Eseguo TERZA sequenza di click...")
-    for i, (x, y) in enumerate(THIRD_CLICK_SEQUENCE, start=1):
-        print(f"  -> Terza seq (no-number) - Click {i} su ({x}, {y})")
-        pyautogui.click(x=x, y=y)
-        time.sleep(THIRD_CLICK_INTERVAL)
-    print("[ACTION] (NO-NUMBER) Terza sequenza completata.")
-
-
-def click_no_number_point_and_third():
-    """Quando non leggiamo numeri per NO_NUMBER_TIMEOUT:
-       1) clicca un punto specifico
-       2) esegue SOLO la TERZA sequenza.
+def deploy_army():
+    """Schiera TUTTE le truppe e gli eroi in un unico passaggio, sempre
+    nella stessa zona (lato destro/basso della base) invece di sperimentare
+    posizioni diverse ad ogni attacco.
     """
-    x, y = NO_NUMBER_CLICK_POINT
-    print(f"[NO-NUMBER] Nessun numero da tanto -> clicco punto speciale ({x}, {y})")
-    pyautogui.click(x=x, y=y)
-    time.sleep(1.0)
+    print("[DEPLOY] Schiero le truppe...")
+    for slot_x in TROOP_SLOTS:
+        adb_tap(slot_x, TROOP_BAR_Y)
+        time.sleep(0.15)
+        for (dx, dy) in DEPLOY_POINTS[:TAPS_PER_TROOP]:
+            adb_tap(dx, dy)
+            time.sleep(CLICK_INTERVAL)
 
-    print("[NO-NUMBER] Eseguo SOLO TERZA sequenza di click...")
-    for i, (cx, cy) in enumerate(THIRD_CLICK_SEQUENCE, start=1):
-        print(f"  -> Terza seq (no-number) - Click {i} su ({cx}, {cy})")
-        pyautogui.click(x=cx, y=cy)
-        time.sleep(THIRD_CLICK_INTERVAL)
-    print("[NO-NUMBER] Terza sequenza completata.")
+    print("[DEPLOY] Schiero gli eroi...")
+    for slot_x in HERO_SLOTS:
+        adb_tap(slot_x, TROOP_BAR_Y)
+        time.sleep(0.15)
+        adb_tap(*HERO_DEPLOY_POINT)
+        time.sleep(CLICK_INTERVAL)
+
+    time.sleep(2.0)
+
+    print("[DEPLOY] Attivo le abilità eroi...")
+    for slot_x in HERO_SLOTS:
+        adb_tap(slot_x, TROOP_BAR_Y)
+        time.sleep(0.2)
 
 
-def click_low_value_point():
-    """Quando il valore è < THRESHOLD: aspetta 3s e clicca un solo punto."""
-    x, y = LOW_VALUE_POINT
-    print(f"[LOW] Valore sotto soglia, attendo 3 secondi e clicco su ({x}, {y})")
+def find_and_evaluate_opponent():
+    """Cerca un avversario e valuta il bottino disponibile: scarta i
+    bersagli sotto soglia (tasto 'Avanti') finché non ne trova uno buono o
+    esaurisce i tentativi. Ritorna True se conviene attaccare.
+    """
+    for attempt in range(1, MAX_SKIP_ATTEMPTS + 1):
+        time.sleep(0.8)
+        loot = read_available_loot()
+        print(f"[SCOUT] Tentativo {attempt}/{MAX_SKIP_ATTEMPTS} - elisir disponibile: {loot}")
+
+        if loot is not None and loot >= THRESHOLD:
+            print(f"[SCOUT] {loot} >= {THRESHOLD} -> attacco questa base")
+            return True
+
+        print("[SCOUT] Sotto soglia (o non letto) -> cerco un altro avversario")
+        adb_tap(*SKIP_BUTTON)
+        time.sleep(1.2)
+
+    print("[SCOUT] Raggiunto il limite di tentativi, attacco comunque l'ultima base trovata.")
+    return True
+
+
+def wait_for_battle_start(max_wait=BATTLE_START_MAX_WAIT):
+    """Aspetta che la battaglia inizi davvero: la schermata di scouting
+    (con 'Bottino disponibile') sparisce quando parte il countdown finale.
+    """
+    print("[WAIT] Aspetto l'inizio della battaglia...")
+    start = time.time()
+    while time.time() - start < max_wait:
+        if read_available_loot() is None:
+            time.sleep(1.5)  # margine di sicurezza
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def run_attack():
+    """Un ciclo completo: cerca avversario, valuta, attacca, aspetta la
+    fine della battaglia, torna al villaggio.
+    """
+    adb_tap(*ATTACK_BUTTON)
+    time.sleep(1.5)
+    adb_tap(*FIND_MATCH_BUTTON)
+    time.sleep(2.0)
+    adb_tap(*CONFIRM_ATTACK_BUTTON)
     time.sleep(3.0)
-    pyautogui.click(x=x, y=y)
+
+    find_and_evaluate_opponent()
+    wait_for_battle_start()
+
+    deploy_army()
+
+    wait_time = random.uniform(*BATTLE_DURATION_WAIT)
+    print(f"[WAIT] Lascio svolgere la battaglia (~{wait_time:.0f}s)...")
+    time.sleep(wait_time)
+
+    print("[ACTION] Torno al villaggio...")
+    adb_tap(*RETURN_HOME_BUTTON)
+    time.sleep(2.0)
+    adb_tap(*RETURN_HOME_BUTTON)  # nel caso serva un secondo tap (es. schermata forziere)
+    time.sleep(2.0)
 
 
 def calibrate_coordinates():
     """
-    Helper di calibrazione: muovi il mouse sui punti che ti servono e
-    lo script stampa in tempo reale le coordinate (x, y) sotto il cursore.
-    Utile perché le coordinate salvate nello script erano calibrate sul
-    PC Windows e sul Mac saranno quasi certamente diverse (risoluzione /
-    scaling Retina differenti).
+    Helper di calibrazione: salva uno screenshot dell'emulatore
+    (calibrate.png, risoluzione 1920x1080) su cui misurare i pixel dei
+    punti che ti servono, con un qualsiasi editor/visualizzatore di
+    immagini che mostri la posizione del cursore (es. Anteprima su Mac,
+    oppure GIMP/Photoshop). Aggiorna poi le costanti in cima al file.
 
     Per usarlo: lancia lo script con  python BOT_COMPLETO_MAC.py --calibrate
-    Premi Ctrl+C per uscire quando hai finito.
     """
     print("=== MODALITÀ CALIBRAZIONE ===")
-    print("Muovi il mouse sui punti di interesse. Ctrl+C per uscire.\n")
-    try:
-        while True:
-            x, y = pyautogui.position()
-            print(f"\rPosizione mouse: ({x}, {y})   ", end="", flush=True)
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        print("\nCalibrazione terminata.")
+    frame = adb_screenshot()
+    h, w = frame.shape[:2]
+    cv2.imwrite("calibrate.png", frame)
+    print(f"Screenshot salvato in calibrate.png ({w}x{h}).")
+    print("Aprilo con un visualizzatore che mostra le coordinate del cursore")
+    print("per misurare i punti che ti servono, poi aggiorna le costanti nello script.")
 
 
 def main():
     global trigger_count
 
-    print("=== OCR BOT ===")
-    print("debug.png viene aggiornato ad ogni lettura")
+    print("=== OCR BOT (ADB / BlueStacks) ===")
+    print("debug.png viene aggiornato ad ogni lettura OCR del bottino")
     print("Ctrl + C per interrompere.\n")
 
-    last_trigger_time = 0
     start_time = time.time()
-    last_number_seen_time = time.time()   # timer "no-number"
+    send_telegram(f"▶️ Bot avviato. Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
 
     while True:
         now = time.time()
 
-        # STOP dopo SESSION_DURATION
         if now - start_time > SESSION_DURATION:
             msg = "Sono passati 50 minuti, fermo il bot per timeout."
             print(f"\n[STOP] {msg}")
-            send_telegram(f"⏱ {msg} Trigger totali: {trigger_count}")
+            send_telegram(f"⏱ {msg} Attacchi totali: {trigger_count}")
             break
 
-        value = read_number_from_dashboard()
+        trigger_count += 1
+        print(f"\n[ATTACCO {trigger_count}/{MAX_TRIGGERS}]")
 
-        if value is not None:
-            print("Valore letto:", value)
-            # RESET TIMER ogni volta che leggiamo un numero valido
-            last_number_seen_time = now
+        try:
+            run_attack()
+        except Exception as e:
+            print(f"[ERRORE] {e}")
+            send_telegram(f"⚠️ Errore durante l'attacco {trigger_count}: {e}")
+            time.sleep(5.0)
+            continue
 
-            # CASO 1 — valore sopra soglia
-            if value > THRESHOLD and (now - last_trigger_time) > TRIGGER_COOLDOWN:
-                trigger_count += 1
-                print(f"[TRIGGER-HIGH] {value} > {THRESHOLD} -> trigger n° {trigger_count}/{MAX_TRIGGERS}")
-
-                if trigger_count < MAX_TRIGGERS:
-                    print("[MODE] Sequenza completa (1 + 2 + 3)")
-                    execute_click_sequence_full()
-                    last_number_seen_time = time.time()
-
-                elif trigger_count == MAX_TRIGGERS:
-                    print("[MODE] TRIGGER FINALE: solo prima + seconda, poi stop.")
-                    execute_click_sequence_without_third()
-
-                    msg = f"✅ Bot ha finito di farmare. Raggiunti {MAX_TRIGGERS} trigger sopra soglia."
-                    print(f"[STOP] {msg}")
-                    send_telegram(msg)
-                    break
-
-                last_trigger_time = time.time()
-                continue
-
-            # CASO 2 — valore sotto soglia
-            elif value < THRESHOLD:
-                click_low_value_point()
-                last_number_seen_time = time.time()
-
-        else:
-            print("Non ho letto nessun numero")
-
-            # se NON leggiamo numeri per più di NO_NUMBER_TIMEOUT secondi
-            if now - last_number_seen_time > NO_NUMBER_TIMEOUT:
-                print(f"[NO-NUMBER] Nessun numero da {NO_NUMBER_TIMEOUT} secondi, clic punto speciale + TERZA")
-                click_no_number_point_and_third()
-                last_number_seen_time = time.time()
-
-        time.sleep(POLL_INTERVAL)
+        if trigger_count >= MAX_TRIGGERS:
+            msg = f"✅ Bot ha finito di farmare. Raggiunti {MAX_TRIGGERS} attacchi."
+            print(f"[STOP] {msg}")
+            send_telegram(msg)
+            break
 
 
 if __name__ == "__main__":
@@ -427,4 +406,9 @@ if __name__ == "__main__":
         print("\nChiuso dall'utente.")
         send_telegram("⛔ Bot interrotto manualmente dall'utente.")
     finally:
-        input("Script terminato. Premi INVIO per chiudere la finestra...")
+        # In esecuzione interattiva (terminale) aspetta un INVIO prima di
+        # chiudere la finestra. In background (nohup/launchd, stdin non
+        # collegato a un terminale) salta l'attesa: altrimenti il processo
+        # resterebbe bloccato per sempre in attesa di input che non arriva.
+        if sys.stdin.isatty():
+            input("Script terminato. Premi INVIO per chiudere la finestra...")

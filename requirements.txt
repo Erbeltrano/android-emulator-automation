@@ -1,8 +1,4 @@
-mss==10.2.0
 numpy==2.5.0
 opencv-python==5.0.0.93
 pytesseract==0.3.13
-pyautogui==0.9.54
 requests==2.34.2
-pyobjc-framework-Cocoa==12.2.1
-pyobjc-framework-Quartz==12.2.1

@@ -1,5 +1,7 @@
 cred
 venv/
 debug.png
+calibrate.png
 __pycache__/
 .DS_Store
+.claude/

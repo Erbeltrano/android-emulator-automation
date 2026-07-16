@@ -1,19 +1,26 @@
-# OCR Bot
+# OCR Bot — Clash of Clans (headless via ADB)
 
-Bot in Python per macOS che automatizza il farming in un gioco da browser/desktop: legge un valore numerico da una zona fissa dello schermo tramite OCR (Tesseract), e in base alla soglia raggiunta esegue sequenze di click predefinite. Invia inoltre notifiche su Telegram all'inizio, alla fine e in caso di interruzione della sessione.
+Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
-⚠️ **Attenzione**: automatizzare i click in un gioco può violare i termini di servizio del gioco stesso e portare al ban dell'account. Usalo a tuo rischio e solo se sei consapevole delle conseguenze.
+Invia inoltre notifiche su Telegram all'avvio, alla fine e in caso di interruzione della sessione.
+
+⚠️ **Attenzione**: automatizzare gli attacchi in un gioco può violare i termini di servizio del gioco stesso e portare al ban dell'account. Usalo a tuo rischio e solo se sei consapevole delle conseguenze.
 
 ## Come funziona
 
-1. Ogni `POLL_INTERVAL` secondi cattura uno screenshot della zona `OCR_REGION` e ci legge un numero con Tesseract (preprocessing con OpenCV: grayscale, resize, blur, threshold Otsu).
-2. Se il valore letto supera `THRESHOLD`, esegue una sequenza di click (scroll + selezione unità + abilità), fino a un massimo di `MAX_TRIGGERS` volte, poi si ferma da solo.
-3. Se il valore è sotto soglia, clicca un punto specifico invece di eseguire la sequenza completa.
-4. Se per `NO_NUMBER_TIMEOUT` secondi non riesce a leggere nessun numero (es. schermata diversa dal previsto), clicca un punto di recovery.
-5. Dopo `SESSION_DURATION` (default 50 minuti) si ferma automaticamente.
-6. Ad ogni evento importante (fine sessione, timeout, interruzione manuale) invia un messaggio Telegram.
+Ad ogni ciclo (`run_attack()`):
 
-`debug.png` viene sovrascritto ad ogni lettura OCR con l'immagine post-elaborazione: utile per capire se Tesseract sta leggendo bene la zona giusta.
+1. Tocca "Attacco!" nel villaggio → tab Multigiocatore → "Trova una partita" → conferma "Attacco!" nella schermata riepilogo esercito.
+2. Legge via OCR il **"Bottino disponibile"** (elisir) dell'avversario trovato, nella schermata di scouting prima che parta la battaglia.
+   - Se è sopra `THRESHOLD` (default 800.000): procede e aspetta l'inizio della battaglia.
+   - Se è sotto soglia: tocca "Avanti" per cercare un altro avversario, fino a `MAX_SKIP_ATTEMPTS` tentativi.
+3. Appena la battaglia inizia, schiera **tutte** le truppe e gli eroi disponibili in un unico passaggio, sempre nella stessa zona della mappa (lato destro/basso — quella testata con successo: 93% danno, 2 stelle), poi attiva le abilità degli eroi.
+4. Aspetta che la battaglia si svolga (tempo casuale tra `BATTLE_DURATION_WAIT`), poi torna al villaggio.
+5. Ripete, fino a `MAX_TRIGGERS` attacchi o `SESSION_DURATION` (default 50 minuti), poi si ferma da solo.
+
+`debug.png` viene sovrascritto ad ogni lettura OCR del bottino con l'immagine post-elaborazione: utile per capire se Tesseract sta leggendo bene la zona giusta.
+
+Ad ogni evento importante (avvio, fine sessione, errori, interruzione manuale) il bot invia un messaggio Telegram.
 
 ## Struttura del progetto
 
@@ -22,20 +29,29 @@ ocr-bot/
 ├── BOT_COMPLETO_MAC.py   # script principale
 ├── requirements.txt      # dipendenze Python
 ├── cred                  # credenziali Telegram (NON versionato, va creato da te)
-├── debug.png              # screenshot di debug (rigenerato ad ogni lettura, NON versionato)
+├── debug.png              # screenshot di debug OCR (rigenerato ad ogni lettura, NON versionato)
 └── venv/                  # virtualenv Python (NON versionato)
 ```
 
 ## Requisiti
 
-- macOS (lo script rileva anche Windows/Linux, ma le coordinate dei click sono calibrate su un Mac 1440x900)
+- macOS con [BlueStacks](https://www.bluestacks.com/) installato, con Clash of Clans già configurato e loggato
 - Python 3.10+
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installato:
+- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract):
   ```bash
   brew install tesseract
   ```
 - Un bot Telegram (per le notifiche): crealo con [@BotFather](https://t.me/BotFather) per ottenere il token, e recupera il tuo `chat_id` (es. scrivendo al bot e leggendo `https://api.telegram.org/bot<TOKEN>/getUpdates`)
-- **Permessi macOS**: la prima volta che lo lanci, macOS chiederà di autorizzare il Terminale (o l'app da cui lo lanci) per **Accessibilità** e **Registrazione schermo**, necessari a `pyautogui` (click automatici) e `mss` (screenshot). Vai in *Impostazioni di Sistema → Privacy e Sicurezza* per concederli se non compare il popup.
+
+### Abilitare ADB in BlueStacks
+
+Il bot parla con BlueStacks tramite ADB (Android Debug Bridge), lo stesso protocollo usato per il debug delle app Android. Va abilitato una volta sola:
+
+1. Apri BlueStacks → **Impostazioni** (ingranaggio) → **Avanzate**
+2. Attiva **"Android Debug Bridge"**
+3. Lascia BlueStacks aperto (può restare minimizzato/in background) quando lanci il bot
+
+Il bot cerca l'eseguibile `adb` prima nel `PATH` di sistema, poi in quello incluso in BlueStacks (`/Applications/BlueStacks.app/Contents/MacOS/hd-adb`), quindi non serve installare Android Studio o altri SDK.
 
 ## Configurazione delle credenziali (variabili d'ambiente)
 
@@ -66,22 +82,33 @@ pip install -r requirements.txt
 
 # 2. crea il file cred con le tue credenziali (vedi sopra)
 
-# 3. carica le credenziali e avvia il bot
+# 3. avvia BlueStacks e abilita ADB (vedi sopra), poi carica le credenziali e avvia il bot
 source cred
 python BOT_COMPLETO_MAC.py
 ```
 
+## Eseguirlo davvero "in background"
+
+Una volta avviato, BlueStacks può restare minimizzato o su un'altra Space: il bot continua a funzionare perché non dipende da cosa è visibile sullo schermo del Mac, solo dalla connessione ADB. Per non dover nemmeno tenere il Terminale aperto in primo piano, puoi lanciarlo con `nohup`:
+
+```bash
+source cred
+nohup python BOT_COMPLETO_MAC.py > bot.log 2>&1 &
+```
+
+Con `nohup`/`&` lo script gira come processo in background: usa `tail -f bot.log` per seguirne l'output, e le notifiche Telegram ti tengono comunque aggiornato su inizio/fine/errori senza dover guardare il terminale.
+
 ## Calibrazione delle coordinate
 
-Le coordinate di `OCR_REGION` e delle varie sequenze di click nello script sono calibrate su una risoluzione specifica (Mac 1440x900). Se la tua risoluzione/scaling è diversa, vanno ricalibrate.
+Tutte le coordinate (pulsanti, zona di schieramento, regione OCR del bottino) sono calibrate sullo screenshot ADB di BlueStacks, che è **1920x1080** indipendentemente dalla risoluzione del Mac o dallo scaling Retina (BlueStacks lo riporta internamente come 1080x1920 "ritratto", ma lo screenshot catturato è sempre in landscape 1920x1080).
 
-Lo script include una modalità di calibrazione che stampa in tempo reale la posizione del mouse:
+Se in futuro l'interfaccia del gioco cambia (aggiornamento di Clash of Clans) o vuoi modificare la zona di schieramento, usa la modalità di calibrazione per salvare uno screenshot di riferimento:
 
 ```bash
 python BOT_COMPLETO_MAC.py --calibrate
 ```
 
-Muovi il mouse sui punti di interesse, leggi le coordinate stampate a schermo, e aggiornale nelle costanti in cima al file (`OCR_REGION`, `CLICK_SEQUENCE`, `SECOND_CLICK_SEQUENCE`, `THIRD_CLICK_SEQUENCE`, `LOW_VALUE_POINT`, `NO_NUMBER_CLICK_POINT`, `DRAG_START`/`DRAG_END`). Premi `Ctrl+C` per uscire.
+Questo salva `calibrate.png` (1920x1080): aprilo con un visualizzatore che mostra le coordinate del cursore (es. Anteprima su Mac) per misurare i punti che ti servono, poi aggiorna le costanti in cima al file (`ATTACK_BUTTON`, `DEPLOY_POINTS`, `OCR_REGION`, ecc.).
 
 ## Parametri principali
 
@@ -89,20 +116,21 @@ Tutti i parametri configurabili sono in cima al file (`BOT_COMPLETO_MAC.py`):
 
 | Parametro | Significato |
 |---|---|
-| `OCR_REGION` | Zona dello schermo (in pixel) da cui leggere il numero |
-| `THRESHOLD` | Soglia sopra la quale scatta la sequenza completa di click |
-| `POLL_INTERVAL` | Ogni quanti secondi leggere il valore OCR |
-| `CLICK_INTERVAL` | Pausa tra un click e l'altro nelle sequenze |
-| `TRIGGER_COOLDOWN` | Tempo minimo tra due trigger consecutivi sopra soglia |
-| `NO_NUMBER_TIMEOUT` | Secondi senza lettura valida prima di eseguire l'azione di recovery |
+| `THRESHOLD` | Elisir minimo saccheggiabile ("Bottino disponibile") per decidere di attaccare |
+| `MAX_SKIP_ATTEMPTS` | Quanti avversari scartare al massimo prima di attaccare comunque l'ultimo trovato |
+| `TROOP_SLOTS` / `HERO_SLOTS` | Posizioni x nella barra truppe/eroi in basso da cui vengono selezionati per lo schieramento |
+| `DEPLOY_POINTS` | Punti della mappa in cui vengono schierate tutte le truppe (sempre la stessa zona) |
+| `BATTLE_START_MAX_WAIT` | Attesa massima che la battaglia inizi dopo aver accettato un avversario |
+| `BATTLE_DURATION_WAIT` | Intervallo (min, max) di attesa per lasciar svolgere la battaglia prima di tornare al villaggio |
 | `SESSION_DURATION` | Durata massima della sessione (default 50 minuti) |
-| `MAX_TRIGGERS` | Numero di trigger sopra soglia dopo cui il bot si ferma da solo |
+| `MAX_TRIGGERS` | Numero di attacchi dopo cui il bot si ferma da solo |
 
 ## File generati (non versionati)
 
 Questi file/cartelle vengono creati durante l'uso e sono esclusi da git (vedi `.gitignore`), perché sono output/dati personali, non codice:
 
 - `cred` — le tue credenziali Telegram
-- `debug.png` — ultimo screenshot post-elaborazione letto dall'OCR
+- `debug.png` — ultimo screenshot post-elaborazione letto dall'OCR del bottino
+- `calibrate.png` — screenshot di riferimento generato da `--calibrate`
 - `venv/` — il virtualenv Python
 - `__pycache__/` — cache di Python
