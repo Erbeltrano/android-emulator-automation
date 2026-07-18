@@ -2,6 +2,12 @@
 
 Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello basta `git log`. Il numero di versione è quello in `VERSION` in cima a `BOT_COMPLETO_MAC.py`.
 
+## v1.6 — Attacchi basati sulla risorsa scarsa in casa + storico sessioni
+- Prima di iniziare a farmare, il bot ora legge oro/elisir/dark elisir in casa e capisce quale risorsa scarseggia di più (rispetto a soglie "scarso" configurabili dalla dashboard); per tutta la sessione attacca solo bersagli ricchi di *quella* risorsa, invece di guardare solo l'elisir come prima. Oro/elisir/dark elisir hanno ora anche soglie di attacco separate, non un'unica soglia elisir.
+- La dashboard ha una nuova sezione **Storico sessioni**: riepilogo (data, durata, attacchi, risorsa prioritaria, bottino stimato) delle ultime sessioni, salvato in `history.json` sul PC Windows a fine sessione.
+- **Perché:** con Ranked/Casual i trofei non sono più un problema, ma continuare a inseguire solo l'elisir non ha senso quando in realtà in quel momento serve oro o dark elisir per gli upgrade in corso; lo storico serve a vedere l'andamento nel tempo senza doverlo tenere a mente sessione per sessione.
+- **Nota:** il bottino nello storico è una stima (il bottino "disponibile" visto in fase di scouting sui bersagli attaccati), non il bottino realmente incassato a fine battaglia, che il gioco non espone via OCR semplice.
+
 ## v1.5 — Parametri di farming configurabili dalla dashboard
 - La dashboard ha ora una sezione **Impostazioni** (soglia elisir minima per attaccare, numero massimo di attacchi, durata sessione) salvata in `config.json` sul PC Windows e letta dal bot ad ogni avvio.
 - **Perché:** evitare di dover modificare il codice e ridistribuire lo script ogni volta che si vuole cambiare la strategia di farming (es. abbassare la soglia in orari con meno basi ricche disponibili).

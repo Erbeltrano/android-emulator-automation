@@ -27,9 +27,15 @@ SSH_OPTS = [
 BOT_LOG_PATH = r"C:\Users\simon\bot_log.txt"
 STATUS_PATH = r"C:\Users\simon\status.json"
 CONFIG_PATH = r"C:\Users\simon\config.json"
+HISTORY_PATH = r"C:\Users\simon\history.json"
 
 DEFAULT_SETTINGS = {
-    "threshold": 800000,
+    "threshold_gold": 800000,
+    "threshold_elixir": 800000,
+    "threshold_dark_elixir": 3000,
+    "home_low_gold": 300000,
+    "home_low_elixir": 300000,
+    "home_low_dark_elixir": 1500,
     "max_triggers": 20,
     "session_duration_minutes": 50,
 }
@@ -103,7 +109,8 @@ def get_bot_status():
         "windows_on": True,
         "running": running,
         "trigger_count": status_data.get("trigger_count", 0),
-        "last_loot": status_data.get("last_loot"),
+        "priority_resource": status_data.get("priority_resource"),
+        "last_resources": status_data.get("last_resources"),
         "session_start_time": status_data.get("session_start_time"),
         "version": status_data.get("version"),
     }
@@ -203,3 +210,17 @@ def save_settings(new_settings):
     )
     ok, out = ssh_run(cmd)
     return ok
+
+
+def get_history(limit=20):
+    """Riepiloghi delle ultime sessioni (letti da history.json sul PC
+    Windows, scritto dal bot a fine sessione), più recenti prima.
+    """
+    ok, out = ssh_run(f"powershell -Command \"Get-Content '{HISTORY_PATH}' -ErrorAction SilentlyContinue\"")
+    if not ok or not out.strip():
+        return []
+    try:
+        history = json.loads(out.strip())
+    except ValueError:
+        return []
+    return list(reversed(history[-limit:]))

@@ -172,6 +172,31 @@
     margin-top: 4px;
   }
   .settings-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .settings-subhead {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--accent); margin: 18px 0 10px 0;
+  }
+  .settings-subhead:first-child { margin-top: 0; }
+
+  .resource-badge {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(91, 140, 255, 0.15);
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+
+  .history-body { display: none; margin-top: 14px; }
+  .history-body.open { display: block; }
+  table.history-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .history-table th, .history-table td {
+    text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border);
+  }
+  .history-table th { color: var(--muted); font-weight: 600; }
+  .history-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
 </style>
 </head>
 <body>
@@ -212,7 +237,10 @@
     </div>
     <div class="card stat-card">
       <h3>💰 Risorse</h3>
-      <div class="stat-row"><span>Ultima soglia elisir</span><span class="v" id="statLoot">–</span></div>
+      <div class="resource-badge" id="statPriority">Priorità: –</div>
+      <div class="stat-row"><span>Oro (ultimo letto)</span><span class="v" id="statGold">–</span></div>
+      <div class="stat-row"><span>Elisir (ultimo letto)</span><span class="v" id="statElixir">–</span></div>
+      <div class="stat-row"><span>Dark elisir (ultimo letto)</span><span class="v" id="statDarkElixir">–</span></div>
     </div>
   </div>
 
@@ -232,10 +260,35 @@
       <span class="chevron" id="settingsChevron">▾</span>
     </div>
     <div class="settings-body" id="settingsBody">
+      <div class="settings-subhead">Soglie di attacco (bottino minimo del bersaglio)</div>
       <div class="field">
-        <label>Soglia elisir minima per attaccare</label>
-        <input type="number" id="setThreshold" step="1000" min="0">
+        <label>Oro</label>
+        <input type="number" id="setThresholdGold" step="1000" min="0">
       </div>
+      <div class="field">
+        <label>Elisir</label>
+        <input type="number" id="setThresholdElixir" step="1000" min="0">
+      </div>
+      <div class="field">
+        <label>Dark elisir</label>
+        <input type="number" id="setThresholdDarkElixir" step="100" min="0">
+      </div>
+
+      <div class="settings-subhead">Soglie "scarso" in casa (sotto questo valore la risorsa diventa prioritaria)</div>
+      <div class="field">
+        <label>Oro</label>
+        <input type="number" id="setHomeLowGold" step="1000" min="0">
+      </div>
+      <div class="field">
+        <label>Elisir</label>
+        <input type="number" id="setHomeLowElixir" step="1000" min="0">
+      </div>
+      <div class="field">
+        <label>Dark elisir</label>
+        <input type="number" id="setHomeLowDarkElixir" step="100" min="0">
+      </div>
+
+      <div class="settings-subhead">Sessione</div>
       <div class="field">
         <label>Numero massimo di attacchi per sessione</label>
         <input type="number" id="setMaxTriggers" step="1" min="1">
@@ -246,7 +299,18 @@
       </div>
       <button class="action save" id="btnSaveSettings">💾 SALVA</button>
       <div class="action-msg" id="settingsMsg"></div>
-      <div class="settings-note">Le impostazioni si applicano dal prossimo avvio del bot, non su una sessione già in corso.</div>
+      <div class="settings-note">Le impostazioni si applicano dal prossimo avvio del bot, non su una sessione già in corso. La risorsa prioritaria della sessione viene decisa all'avvio in base a quale scende sotto la sua soglia "scarso".</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="terminal-header" id="historyToggle">
+      <span>📈</span>
+      <span class="title">STORICO SESSIONI</span>
+      <span class="chevron" id="historyChevron">▾</span>
+    </div>
+    <div class="history-body" id="historyBody">
+      <div id="historyContent" class="history-empty">Caricamento...</div>
     </div>
   </div>
 </main>
@@ -274,7 +338,12 @@ async function loadSettings() {
   try {
     const res = await fetch('/api/settings');
     const s = await res.json();
-    $('setThreshold').value = s.threshold;
+    $('setThresholdGold').value = s.threshold_gold;
+    $('setThresholdElixir').value = s.threshold_elixir;
+    $('setThresholdDarkElixir').value = s.threshold_dark_elixir;
+    $('setHomeLowGold').value = s.home_low_gold;
+    $('setHomeLowElixir').value = s.home_low_elixir;
+    $('setHomeLowDarkElixir').value = s.home_low_dark_elixir;
     $('setMaxTriggers').value = s.max_triggers;
     $('setSessionMinutes').value = s.session_duration_minutes;
   } catch (e) {
@@ -284,7 +353,12 @@ async function loadSettings() {
 
 $('btnSaveSettings').addEventListener('click', async () => {
   const payload = {
-    threshold: parseInt($('setThreshold').value, 10),
+    threshold_gold: parseInt($('setThresholdGold').value, 10),
+    threshold_elixir: parseInt($('setThresholdElixir').value, 10),
+    threshold_dark_elixir: parseInt($('setThresholdDarkElixir').value, 10),
+    home_low_gold: parseInt($('setHomeLowGold').value, 10),
+    home_low_elixir: parseInt($('setHomeLowElixir').value, 10),
+    home_low_dark_elixir: parseInt($('setHomeLowDarkElixir').value, 10),
     max_triggers: parseInt($('setMaxTriggers').value, 10),
     session_duration_minutes: parseInt($('setSessionMinutes').value, 10),
   };
@@ -370,9 +444,59 @@ async function refreshStatus() {
     $('actionMsg').textContent = s.action_message || '';
 
     $('statAttacks').textContent = s.trigger_count ?? '–';
-    $('statLoot').textContent = s.last_loot != null ? s.last_loot.toLocaleString('it-IT') : '–';
+    $('statPriority').textContent = 'Priorità: ' + (s.priority_resource ?? '–');
+    const resources = s.last_resources || {};
+    const fmt = (v) => v != null ? v.toLocaleString('it-IT') : '–';
+    $('statGold').textContent = fmt(resources.gold);
+    $('statElixir').textContent = fmt(resources.elixir);
+    $('statDarkElixir').textContent = fmt(resources.dark_elixir);
     lastStart = s.running ? s.session_start_time : null;
   } catch (e) {}
+}
+
+let historyOpen = false;
+$('historyToggle').addEventListener('click', () => {
+  historyOpen = !historyOpen;
+  $('historyBody').classList.toggle('open', historyOpen);
+  $('historyChevron').classList.toggle('open', historyOpen);
+  if (historyOpen) loadHistory();
+});
+
+function fmtDate(ts) {
+  if (!ts) return '–';
+  return new Date(ts * 1000).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+async function loadHistory() {
+  $('historyContent').className = 'history-empty';
+  $('historyContent').textContent = 'Caricamento...';
+  try {
+    const res = await fetch('/api/history');
+    const data = await res.json();
+    const sessions = data.sessions || [];
+    if (sessions.length === 0) {
+      $('historyContent').textContent = 'Nessuna sessione registrata ancora.';
+      return;
+    }
+    const rows = sessions.map(s => {
+      const t = s.totals || {};
+      const fmt = (v) => (v || 0).toLocaleString('it-IT');
+      return `<tr>
+        <td>${fmtDate(s.start)}</td>
+        <td>${s.duration_minutes ?? '–'} min</td>
+        <td>${s.trigger_count ?? '–'}</td>
+        <td>${s.priority_resource ?? '–'}</td>
+        <td>🥇${fmt(t.gold)} 🧪${fmt(t.elixir)} 🔮${fmt(t.dark_elixir)}</td>
+      </tr>`;
+    }).join('');
+    $('historyContent').className = '';
+    $('historyContent').innerHTML = `<table class="history-table">
+      <thead><tr><th>Data</th><th>Durata</th><th>Attacchi</th><th>Priorità</th><th>Bottino stimato</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  } catch (e) {
+    $('historyContent').textContent = 'Errore nel caricamento dello storico.';
+  }
 }
 
 setInterval(() => {
