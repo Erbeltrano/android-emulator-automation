@@ -10,7 +10,7 @@ import pytesseract
 import requests   # per Telegram
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.1"
+VERSION = "1.2"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -62,6 +62,7 @@ def find_tesseract_cmd():
         "/opt/homebrew/bin/tesseract",   # Homebrew su Apple Silicon (M1/M2/M3)
         "/usr/local/bin/tesseract",      # Homebrew su Mac Intel
         "/usr/bin/tesseract",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",   # Windows
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -93,7 +94,8 @@ def find_adb_cmd():
         return found
 
     candidates = [
-        "/Applications/BlueStacks.app/Contents/MacOS/hd-adb",
+        "/Applications/BlueStacks.app/Contents/MacOS/hd-adb",       # Mac
+        r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe",               # Windows
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -101,7 +103,8 @@ def find_adb_cmd():
 
     raise FileNotFoundError(
         "adb non trovato. Installa Android Platform Tools (brew install "
-        "android-platform-tools) oppure verifica che BlueStacks sia in /Applications."
+        "android-platform-tools) oppure verifica che BlueStacks sia installato "
+        "nel percorso predefinito."
     )
 
 
