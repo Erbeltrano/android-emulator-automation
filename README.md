@@ -1,5 +1,7 @@
 # OCR Bot — Clash of Clans (headless via ADB)
 
+**Versione:** 1.1 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+
 Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
 Invia inoltre notifiche su Telegram all'avvio, alla fine e in caso di interruzione della sessione.

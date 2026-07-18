@@ -9,6 +9,9 @@ import cv2
 import pytesseract
 import requests   # per Telegram
 
+# Aggiornare ad ogni modifica funzionale del bot (anche nel README).
+VERSION = "1.1"
+
 # ==========================
 # CONFIGURAZIONE TELEGRAM
 # ==========================
@@ -197,11 +200,26 @@ DEPLOY_POINTS = [
 TAPS_PER_TROOP = 10  # oltre alle truppe disponibili i tap in eccesso non fanno nulla
 HERO_DEPLOY_POINT = (1350, 550)
 
+# Scroll verso il basso appena inizia la battaglia, prima di schierare:
+# porta la vista nella posizione giusta per raggiungere la zona di
+# schieramento in basso a destra. Scalato dalle coordinate Mac originali
+# (563,500)->(563,250) su 1440x900; da ricalibrare se non allinea bene.
+DRAG_START = (750, 600)
+DRAG_END = (750, 300)
+DRAG_DURATION = 0.6
+
+# Pulsante rosso "Termina battaglia" / "Resa" (stessa posizione, testo
+# diverso a seconda che tu abbia gia' schierato truppe o no). Se hai gia'
+# schierato truppe, il gioco chiede conferma con un popup "Arrendersi?"
+# (Annulla/OK): il pulsante OK verde e' a CONFIRM_END_BATTLE_BUTTON.
+END_BATTLE_BUTTON = (140, 785)
+CONFIRM_END_BATTLE_BUTTON = (1150, 670)
+
 THRESHOLD = 800000          # elisir minimo saccheggiabile per attaccare
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
 CLICK_INTERVAL = 0.15
-BATTLE_START_MAX_WAIT = 35.0   # attesa massima che la battaglia inizi dopo l'accettazione
-BATTLE_DURATION_WAIT = (75.0, 100.0)  # attesa (min, max) per lasciare svolgere la battaglia
+BATTLE_START_MAX_WAIT = 2.0   # attesa fissa dopo aver accettato un bersaglio sopra soglia
+BATTLE_DURATION_WAIT = (60.0, 90.0)  # attesa (min, max) prima di terminare la battaglia da soli
 
 SESSION_DURATION = 50 * 60   # 50 minuti
 MAX_TRIGGERS = 20            # numero di attacchi dopo cui il bot si ferma da solo
@@ -211,6 +229,38 @@ trigger_count = 0
 # ==========================
 # FUNZIONI
 # ==========================
+
+# Pixel usato per capire se siamo nel villaggio (home) oppure in una
+# schermata di ricerca/battaglia. In quel punto (dentro il pulsante in
+# basso a sinistra) il colore e' arancione/oro acceso nel villaggio
+# (R-B ~140) e blu altrove in scouting/battaglia (R-B ~ -115/-166).
+# Durante la schermata di caricamento "Ricerca avversari..." il pixel e'
+# grigio neutro (R-B ~6): un semplice confronto R>B lo classificava per
+# errore come "home" (falso positivo che causava lo schieramento sulla
+# base propria). La soglia sulla differenza evita l'ambiguita'.
+HOME_CHECK_POINT = (135, 1010)
+HOME_CHECK_MIN_DIFF = 50
+
+
+def _home_pixel_says_home():
+    frame = adb_screenshot()
+    x, y = HOME_CHECK_POINT
+    b, g, r = frame[y, x]
+    return (int(r) - int(b)) > HOME_CHECK_MIN_DIFF
+
+
+def is_home_screen():
+    """True se siamo nel villaggio (non in ricerca/battaglia).
+
+    Richiede due letture concordi a distanza di tempo per evitare falsi
+    positivi durante i fotogrammi di transizione tra una schermata e
+    l'altra (es. subito dopo aver toccato 'Avanti').
+    """
+    if not _home_pixel_says_home():
+        return False
+    time.sleep(0.4)
+    return _home_pixel_says_home()
+
 
 def read_available_loot():
     """Legge il valore di 'Bottino disponibile' (elisir) nella schermata di
@@ -246,11 +296,22 @@ def read_available_loot():
         return None
 
 
-def deploy_army():
-    """Schiera TUTTE le truppe e gli eroi in un unico passaggio, sempre
-    nella stessa zona (lato destro/basso della base) invece di sperimentare
-    posizioni diverse ad ogni attacco.
+def scroll_down_by_drag():
+    """Scroll verso il basso appena inizia la battaglia, per portare la
+    vista nella posizione giusta prima di schierare le truppe.
     """
+    print("[ACTION] Scroll verso il basso...")
+    adb_swipe(DRAG_START[0], DRAG_START[1], DRAG_END[0], DRAG_END[1], int(DRAG_DURATION * 1000))
+    time.sleep(1.0)
+
+
+def deploy_army():
+    """Scrolla nella posizione giusta, poi schiera TUTTE le truppe e gli
+    eroi in un unico passaggio, sempre nella stessa zona (lato destro/basso
+    della base) invece di sperimentare posizioni diverse ad ogni attacco.
+    """
+    scroll_down_by_drag()
+
     print("[DEPLOY] Schiero le truppe...")
     for slot_x in TROOP_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
@@ -274,18 +335,37 @@ def deploy_army():
         time.sleep(0.2)
 
 
+# Il countdown di matchmaking del gioco dura ~28-30s da quando un avversario
+# viene trovato: se il loop di skip lo supera, la battaglia parte da sola
+# mentre lo script pensa ancora di essere in fase di scouting. Per questo
+# ogni iterazione ricontrolla anche il tempo trascorso, non solo il numero
+# di tentativi.
+SCOUT_TIME_BUDGET = 20.0
+
+
 def find_and_evaluate_opponent():
     """Cerca un avversario e valuta il bottino disponibile: scarta i
-    bersagli sotto soglia (tasto 'Avanti') finché non ne trova uno buono o
-    esaurisce i tentativi. Ritorna True se conviene attaccare.
+    bersagli sotto soglia (tasto 'Avanti') finché non ne trova uno buono,
+    esaurisce i tentativi, o rischia di far scadere il countdown. Ritorna
+    True se conviene procedere verso la battaglia.
     """
+    start = time.time()
     for attempt in range(1, MAX_SKIP_ATTEMPTS + 1):
         time.sleep(0.8)
+
+        if is_home_screen():
+            print("[SCOUT] Siamo tornati al villaggio inaspettatamente, interrompo la ricerca.")
+            return False
+
         loot = read_available_loot()
         print(f"[SCOUT] Tentativo {attempt}/{MAX_SKIP_ATTEMPTS} - elisir disponibile: {loot}")
 
         if loot is not None and loot >= THRESHOLD:
             print(f"[SCOUT] {loot} >= {THRESHOLD} -> attacco questa base")
+            return True
+
+        if time.time() - start > SCOUT_TIME_BUDGET:
+            print("[SCOUT] Budget di tempo scouting esaurito, attacco comunque l'ultima base trovata.")
             return True
 
         print("[SCOUT] Sotto soglia (o non letto) -> cerco un altro avversario")
@@ -296,23 +376,35 @@ def find_and_evaluate_opponent():
     return True
 
 
-def wait_for_battle_start(max_wait=BATTLE_START_MAX_WAIT):
-    """Aspetta che la battaglia inizi davvero: la schermata di scouting
-    (con 'Bottino disponibile') sparisce quando parte il countdown finale.
+def wait_for_battle_start(fixed_wait=BATTLE_START_MAX_WAIT):
+    """Aspetta che il countdown di matchmaking finisca e la battaglia
+    inizi davvero.
+
+    Provare a rilevare la transizione leggendo lo schermo (OCR sul
+    bottino, colore di icone) si è rivelato inaffidabile nei test dal
+    vivo: l'OCR a volte legge numeri residui/rumore invece di None, e le
+    decorazioni della base (a tema, es. Pasqua/Natale) possono avere
+    colori identici a quelli delle icone dell'interfaccia, generando falsi
+    positivi/negativi. Molto più robusto aspettare semplicemente il tempo
+    fisso del countdown di gioco (~28-30s) e poi verificare solo che non
+    siamo tornati al villaggio (quell'unico controllo si è dimostrato
+    affidabile).
     """
-    print("[WAIT] Aspetto l'inizio della battaglia...")
-    start = time.time()
-    while time.time() - start < max_wait:
-        if read_available_loot() is None:
-            time.sleep(1.5)  # margine di sicurezza
-            return True
-        time.sleep(1.0)
-    return False
+    print(f"[WAIT] Aspetto {fixed_wait:.0f}s che il countdown finisca...")
+    time.sleep(fixed_wait)
+
+    if is_home_screen():
+        print("[WAIT] Siamo al villaggio, la battaglia non è mai iniziata.")
+        return False
+    return True
 
 
 def run_attack():
     """Un ciclo completo: cerca avversario, valuta, attacca, aspetta la
-    fine della battaglia, torna al villaggio.
+    fine della battaglia, torna al villaggio. Ogni fase verifica lo stato
+    reale dello schermo prima di procedere: se qualcosa va storto (es. si
+    torna al villaggio prima del previsto) il ciclo si interrompe subito
+    invece di continuare a schierare truppe alla cieca.
     """
     adb_tap(*ATTACK_BUTTON)
     time.sleep(1.5)
@@ -321,14 +413,31 @@ def run_attack():
     adb_tap(*CONFIRM_ATTACK_BUTTON)
     time.sleep(3.0)
 
-    find_and_evaluate_opponent()
-    wait_for_battle_start()
+    if not find_and_evaluate_opponent():
+        print("[ATTACK] Scouting interrotto, salto questo ciclo.")
+        return
+
+    if not wait_for_battle_start():
+        print("[ATTACK] La battaglia non è iniziata come previsto, salto lo schieramento.")
+        return
+
+    if is_home_screen():
+        print("[ATTACK] Siamo al villaggio invece che in battaglia: non schiero nulla.")
+        return
 
     deploy_army()
 
     wait_time = random.uniform(*BATTLE_DURATION_WAIT)
-    print(f"[WAIT] Lascio svolgere la battaglia (~{wait_time:.0f}s)...")
+    print(f"[WAIT] Aspetto ~{wait_time:.0f}s (tempo casuale, per sembrare più umano) prima di terminare...")
     time.sleep(wait_time)
+
+    print("[ACTION] Termino la battaglia...")
+    adb_tap(*END_BATTLE_BUTTON)
+    time.sleep(1.5)
+    # Se abbiamo schierato truppe, compare il popup di conferma "Arrendersi?":
+    # questo tap non fa nulla se il popup non c'è (tocca lo sfondo del risultato).
+    adb_tap(*CONFIRM_END_BATTLE_BUTTON)
+    time.sleep(2.0)
 
     print("[ACTION] Torno al villaggio...")
     adb_tap(*RETURN_HOME_BUTTON)
@@ -359,12 +468,12 @@ def calibrate_coordinates():
 def main():
     global trigger_count
 
-    print("=== OCR BOT (ADB / BlueStacks) ===")
+    print(f"=== OCR BOT (ADB / BlueStacks) - v{VERSION} ===")
     print("debug.png viene aggiornato ad ogni lettura OCR del bottino")
     print("Ctrl + C per interrompere.\n")
 
     start_time = time.time()
-    send_telegram(f"▶️ Bot avviato. Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
+    send_telegram(f"▶️ Bot avviato (v{VERSION}). Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
 
     while True:
         now = time.time()
