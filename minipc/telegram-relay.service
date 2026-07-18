@@ -1,0 +1,14 @@
+[Unit]
+Description=Relay Telegram per il bot Clash of Clans (wake PC Windows + avvio/stato/stop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/cred_relay
+ExecStart=/usr/bin/python3 -u %h/telegram_relay.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

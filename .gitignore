@@ -6,3 +6,5 @@ bot.log
 __pycache__/
 .DS_Store
 .claude/
+minipc/cred_relay
+windows/cred.bat
