@@ -7,6 +7,7 @@ Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello
 - La dashboard ha una nuova sezione **Storico sessioni**: riepilogo (data, durata, attacchi, risorsa prioritaria, bottino stimato) delle ultime sessioni, salvato in `history.json` sul PC Windows a fine sessione.
 - **Perché:** con Ranked/Casual i trofei non sono più un problema, ma continuare a inseguire solo l'elisir non ha senso quando in realtà in quel momento serve oro o dark elisir per gli upgrade in corso; lo storico serve a vedere l'andamento nel tempo senza doverlo tenere a mente sessione per sessione.
 - **Nota:** il bottino nello storico è una stima (il bottino "disponibile" visto in fase di scouting sui bersagli attaccati), non il bottino realmente incassato a fine battaglia, che il gioco non espone via OCR semplice.
+- Le 5 nuove regioni OCR (oro/dark elisir in scouting e in casa) sono state calibrate e verificate dal vivo su BlueStacks. Durante la calibrazione è emerso che Tesseract in modalità "singola riga" (psm 7) falliva silenziosamente sui numeri con separatore delle migliaia quando il testo copre più del ~30% della regione (es. "26 000 000" in casa): passato a psm 13 ("raw line"), che legge correttamente sia i numeri lunghi che quelli corti.
 
 ## v1.5 — Parametri di farming configurabili dalla dashboard
 - La dashboard ha ora una sezione **Impostazioni** (soglia elisir minima per attaccare, numero massimo di attacchi, durata sessione) salvata in `config.json` sul PC Windows e letta dal bot ad ogni avvio.

@@ -177,51 +177,47 @@ SKIP_BUTTON = (1745, 780)            # "Avanti" - scarta l'avversario e ricerca
 RETURN_HOME_BUTTON = (955, 985)      # "Torna al villaggio" a fine battaglia
 
 # Regioni "Bottino disponibile" nella schermata di scouting, prima che la
-# battaglia inizi. Formato (left, top, width, height). OCR_REGION_ELIXIR è
-# calibrata e testata dal vivo; oro e dark elisir sono PLACEHOLDER da
-# calibrare allo stesso modo (screenshot con --calibrate mentre si è nella
-# schermata di scouting, poi misura dei pixel con un visualizzatore
-# immagini) prima che la lettura di quelle due risorse funzioni davvero.
+# battaglia inizi. Formato (left, top, width, height). Calibrate dal vivo
+# (screenshot 1920x1080 su BlueStacks).
 OCR_REGION_ELIXIR = {
     "left": 88,
     "top": 203,
     "width": 180,
     "height": 30,
 }
-OCR_REGION_GOLD = {          # DA CALIBRARE
-    "left": 88,
-    "top": 163,
+OCR_REGION_GOLD = {
+    "left": 68,
+    "top": 149,
     "width": 180,
     "height": 30,
 }
-OCR_REGION_DARK_ELIXIR = {   # DA CALIBRARE
-    "left": 88,
-    "top": 243,
+OCR_REGION_DARK_ELIXIR = {
+    "left": 61,
+    "top": 263,
     "width": 180,
     "height": 30,
 }
 
-# Regioni delle risorse in casa (barra in alto a sinistra nel villaggio),
+# Regioni delle risorse in casa (barra in alto a destra nel villaggio),
 # usate per capire quale risorsa scarseggia di più prima di iniziare a
-# farmare. PLACEHOLDER: calibrare con --calibrate mentre si è nel
-# villaggio (schermata home).
-HOME_REGION_GOLD = {          # DA CALIBRARE
-    "left": 60,
-    "top": 20,
-    "width": 160,
-    "height": 30,
+# farmare. Calibrate dal vivo (screenshot 1920x1080 su BlueStacks).
+HOME_REGION_GOLD = {
+    "left": 1595,
+    "top": 42,
+    "width": 220,
+    "height": 34,
 }
-HOME_REGION_ELIXIR = {        # DA CALIBRARE
-    "left": 60,
-    "top": 60,
-    "width": 160,
-    "height": 30,
+HOME_REGION_ELIXIR = {
+    "left": 1595,
+    "top": 145,
+    "width": 220,
+    "height": 34,
 }
-HOME_REGION_DARK_ELIXIR = {   # DA CALIBRARE
-    "left": 60,
-    "top": 100,
-    "width": 160,
-    "height": 30,
+HOME_REGION_DARK_ELIXIR = {
+    "left": 1655,
+    "top": 243,
+    "width": 170,
+    "height": 34,
 }
 
 # Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
@@ -420,7 +416,14 @@ def _ocr_region_to_int(frame, region, debug_name):
 
     cv2.imwrite(f"debug_{debug_name}.png", mask)
 
-    ocr_config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789"
+    # psm 7 (singola riga) falliva silenziosamente (zero blocchi di testo
+    # trovati) sui numeri con separatore delle migliaia " " quando la parte
+    # bianca del testo supera circa il 30% dell'area della regione (es.
+    # "26 000 000" in casa), pur funzionando su numeri piu' corti come
+    # "321 946": scoperto testando dal vivo le nuove regioni di oro/dark
+    # elisir. psm 13 (raw line, bypassa l'euristica di layout di Tesseract)
+    # legge correttamente in entrambi i casi.
+    ocr_config = "--oem 3 --psm 13 -c tessedit_char_whitelist=0123456789"
     text = pytesseract.image_to_string(mask, config=ocr_config)
 
     digits = "".join(ch for ch in text if ch.isdigit())
