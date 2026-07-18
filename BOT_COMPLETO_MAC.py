@@ -11,7 +11,7 @@ import pytesseract
 import requests   # per Telegram
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.4"
+VERSION = "1.5"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -219,14 +219,38 @@ DRAG_DURATION = 0.6
 END_BATTLE_BUTTON = (140, 785)
 CONFIRM_END_BATTLE_BUTTON = (1150, 670)
 
-THRESHOLD = 800000          # elisir minimo saccheggiabile per attaccare
+# Parametri di farming regolabili dalla dashboard web (sezione Impostazioni):
+# letti da config.json accanto allo script, con questi valori come default
+# se il file non c'e' o e' incompleto.
+CONFIG_FILE = "config.json"
+_CONFIG_DEFAULTS = {
+    "threshold": 800000,
+    "max_triggers": 20,
+    "session_duration_minutes": 50,
+}
+
+
+def load_config():
+    config = dict(_CONFIG_DEFAULTS)
+    try:
+        with open(CONFIG_FILE) as f:
+            data = json.load(f)
+        config.update({k: v for k, v in data.items() if k in _CONFIG_DEFAULTS})
+    except (FileNotFoundError, ValueError):
+        pass
+    return config
+
+
+_config = load_config()
+
+THRESHOLD = _config["threshold"]              # elisir minimo saccheggiabile per attaccare
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
 CLICK_INTERVAL = 0.15
 BATTLE_START_MAX_WAIT = 2.0   # attesa fissa dopo aver accettato un bersaglio sopra soglia
 BATTLE_DURATION_WAIT = (60.0, 90.0)  # attesa (min, max) prima di terminare la battaglia da soli
 
-SESSION_DURATION = 50 * 60   # 50 minuti
-MAX_TRIGGERS = 20            # numero di attacchi dopo cui il bot si ferma da solo
+SESSION_DURATION = _config["session_duration_minutes"] * 60
+MAX_TRIGGERS = _config["max_triggers"]         # numero di attacchi dopo cui il bot si ferma da solo
 trigger_count = 0
 
 # Stato esposto alla dashboard web (letto da fuori via SSH, non dal bot

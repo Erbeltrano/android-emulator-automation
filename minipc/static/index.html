@@ -150,6 +150,28 @@
 
   .chevron { transition: transform 0.15s; color: var(--muted); }
   .chevron.open { transform: rotate(180deg); }
+
+  .settings-body { display: none; margin-top: 14px; }
+  .settings-body.open { display: block; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .field input {
+    width: 100%;
+    background: #01030a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  button.action.save {
+    width: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    color: #fff;
+    margin-top: 4px;
+  }
+  .settings-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -202,6 +224,31 @@
     </div>
     <div class="terminal-body" id="terminalBody"></div>
   </div>
+
+  <div class="card">
+    <div class="terminal-header" id="settingsToggle">
+      <span>⚙️</span>
+      <span class="title">IMPOSTAZIONI</span>
+      <span class="chevron" id="settingsChevron">▾</span>
+    </div>
+    <div class="settings-body" id="settingsBody">
+      <div class="field">
+        <label>Soglia elisir minima per attaccare</label>
+        <input type="number" id="setThreshold" step="1000" min="0">
+      </div>
+      <div class="field">
+        <label>Numero massimo di attacchi per sessione</label>
+        <input type="number" id="setMaxTriggers" step="1" min="1">
+      </div>
+      <div class="field">
+        <label>Durata massima sessione (minuti)</label>
+        <input type="number" id="setSessionMinutes" step="5" min="5">
+      </div>
+      <button class="action save" id="btnSaveSettings">💾 SALVA</button>
+      <div class="action-msg" id="settingsMsg"></div>
+      <div class="settings-note">Le impostazioni si applicano dal prossimo avvio del bot, non su una sessione già in corso.</div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -213,6 +260,48 @@ $('terminalToggle').addEventListener('click', () => {
   $('terminalBody').classList.toggle('open', terminalOpen);
   $('chevron').classList.toggle('open', terminalOpen);
   if (terminalOpen) refreshLog();
+});
+
+let settingsOpen = false;
+$('settingsToggle').addEventListener('click', () => {
+  settingsOpen = !settingsOpen;
+  $('settingsBody').classList.toggle('open', settingsOpen);
+  $('settingsChevron').classList.toggle('open', settingsOpen);
+  if (settingsOpen) loadSettings();
+});
+
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    const s = await res.json();
+    $('setThreshold').value = s.threshold;
+    $('setMaxTriggers').value = s.max_triggers;
+    $('setSessionMinutes').value = s.session_duration_minutes;
+  } catch (e) {
+    $('settingsMsg').textContent = 'Errore nel caricamento delle impostazioni.';
+  }
+}
+
+$('btnSaveSettings').addEventListener('click', async () => {
+  const payload = {
+    threshold: parseInt($('setThreshold').value, 10),
+    max_triggers: parseInt($('setMaxTriggers').value, 10),
+    session_duration_minutes: parseInt($('setSessionMinutes').value, 10),
+  };
+  $('settingsMsg').textContent = 'Salvataggio...';
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    $('settingsMsg').textContent = data.ok
+      ? '✅ Salvato. Verrà usato dal prossimo avvio del bot.'
+      : '❌ Errore nel salvataggio (PC Windows spento?).';
+  } catch (e) {
+    $('settingsMsg').textContent = '❌ Errore di rete durante il salvataggio.';
+  }
 });
 
 $('btnPlay').addEventListener('click', async () => {

@@ -5,6 +5,7 @@ usata sia dal relay Telegram (telegram_relay.py) che dalla dashboard web
 
 Solo libreria standard: nessuna dipendenza da installare.
 """
+import base64
 import json
 import os
 import socket
@@ -25,6 +26,13 @@ SSH_OPTS = [
 
 BOT_LOG_PATH = r"C:\Users\simon\bot_log.txt"
 STATUS_PATH = r"C:\Users\simon\status.json"
+CONFIG_PATH = r"C:\Users\simon\config.json"
+
+DEFAULT_SETTINGS = {
+    "threshold": 800000,
+    "max_triggers": 20,
+    "session_duration_minutes": 50,
+}
 
 WAKE_WAIT_SECONDS = 35   # attesa dopo il magic packet prima di provare SSH
 WAKE_SSH_RETRIES = 10
@@ -162,3 +170,36 @@ def stop_bot(progress=lambda msg: None):
     ssh_run("shutdown /s /t 5 /f")
     progress("✅ Fatto: bot fermato, BlueStacks chiuso, PC in spegnimento.")
     return True
+
+
+def get_settings():
+    """Parametri di farming attuali (letti da config.json sul PC Windows,
+    con i default se il file non c'e' ancora).
+    """
+    ok, out = ssh_run(f"powershell -Command \"Get-Content '{CONFIG_PATH}' -ErrorAction SilentlyContinue\"")
+    settings = dict(DEFAULT_SETTINGS)
+    if ok and out.strip():
+        try:
+            data = json.loads(out.strip())
+            settings.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
+        except ValueError:
+            pass
+    return settings
+
+
+def save_settings(new_settings):
+    """Scrive config.json sul PC Windows: letto dal bot al prossimo avvio
+    (non ha effetto su una sessione gia' in corso).
+    """
+    settings = dict(DEFAULT_SETTINGS)
+    settings.update({k: v for k, v in new_settings.items() if k in DEFAULT_SETTINGS})
+
+    payload = json.dumps(settings)
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    cmd = (
+        "powershell -Command \"[System.IO.File]::WriteAllText("
+        f"'{CONFIG_PATH}', [System.Text.Encoding]::UTF8.GetString("
+        f"[System.Convert]::FromBase64String('{b64}')))\""
+    )
+    ok, out = ssh_run(cmd)
+    return ok

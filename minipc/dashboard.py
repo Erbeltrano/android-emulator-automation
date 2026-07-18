@@ -93,6 +93,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(status)
         elif self.path == "/api/log":
             self._send_json({"lines": bot_control.get_log_tail(40)})
+        elif self.path == "/api/settings":
+            self._send_json(bot_control.get_settings())
         else:
             self.send_response(404)
             self.end_headers()
@@ -114,6 +116,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             threading.Thread(target=_run_stop, daemon=True).start()
             self._send_json({"ok": True})
+        elif self.path == "/api/settings":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                new_settings = json.loads(body)
+            except ValueError:
+                self._send_json({"ok": False, "message": "JSON non valido"}, status=400)
+                return
+            ok = bot_control.save_settings(new_settings)
+            self._send_json({"ok": ok})
         else:
             self.send_response(404)
             self.end_headers()
