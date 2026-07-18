@@ -1,0 +1,14 @@
+[Unit]
+Description=Dashboard web per il bot Clash of Clans
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=/usr/bin/python3 -u %h/dashboard.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

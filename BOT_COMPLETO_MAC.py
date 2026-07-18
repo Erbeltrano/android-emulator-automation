@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import time
 import random
 import shutil
@@ -10,7 +11,7 @@ import pytesseract
 import requests   # per Telegram
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.2"
+VERSION = "1.4"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -228,6 +229,28 @@ SESSION_DURATION = 50 * 60   # 50 minuti
 MAX_TRIGGERS = 20            # numero di attacchi dopo cui il bot si ferma da solo
 trigger_count = 0
 
+# Stato esposto alla dashboard web (letto da fuori via SSH, non dal bot
+# stesso): ultima soglia elisir letta e orario di partenza sessione.
+STATUS_FILE = "status.json"
+last_loot = None
+session_start_time = None
+
+
+def write_status(running):
+    """Scrive lo stato corrente su file, letto poi dalla dashboard web."""
+    try:
+        with open(STATUS_FILE, "w") as f:
+            json.dump({
+                "running": running,
+                "version": VERSION,
+                "session_start_time": session_start_time,
+                "trigger_count": trigger_count,
+                "last_loot": last_loot,
+                "updated_at": time.time(),
+            }, f)
+    except Exception as e:
+        print(f"[STATUS] Errore scrittura {STATUS_FILE}: {e}")
+
 
 # ==========================
 # FUNZIONI
@@ -352,6 +375,7 @@ def find_and_evaluate_opponent():
     esaurisce i tentativi, o rischia di far scadere il countdown. Ritorna
     True se conviene procedere verso la battaglia.
     """
+    global last_loot
     start = time.time()
     for attempt in range(1, MAX_SKIP_ATTEMPTS + 1):
         time.sleep(0.8)
@@ -362,6 +386,8 @@ def find_and_evaluate_opponent():
 
         loot = read_available_loot()
         print(f"[SCOUT] Tentativo {attempt}/{MAX_SKIP_ATTEMPTS} - elisir disponibile: {loot}")
+        if loot is not None:
+            last_loot = loot
 
         if loot is not None and loot >= THRESHOLD:
             print(f"[SCOUT] {loot} >= {THRESHOLD} -> attacco questa base")
@@ -409,8 +435,27 @@ def run_attack():
     torna al villaggio prima del previsto) il ciclo si interrompe subito
     invece di continuare a schierare truppe alla cieca.
     """
+    # A volte un popup imprevisto sopra al villaggio (es. "Miglioramento
+    # completato!", offerte, eventi) assorbe il tap su "Attacco!": la
+    # sequenza di tap successivi (pensati per le schermate seguenti) allora
+    # cade ancora sul villaggio, rischiando di premere pulsanti sbagliati
+    # (es. il Negozio, se la sua posizione coincide con una di quelle
+    # coordinate). Per questo verifichiamo che il tap abbia funzionato
+    # davvero (siamo usciti dal villaggio) prima di proseguire, invece di
+    # fidarci ciecamente del solo tempo di attesa.
     adb_tap(*ATTACK_BUTTON)
     time.sleep(1.5)
+
+    if is_home_screen():
+        print("[ATTACK] 'Attacco!' non sembra essersi aperto (popup imprevisto?), riprovo...")
+        adb_tap(*ATTACK_BUTTON)
+        time.sleep(1.5)
+
+        if is_home_screen():
+            print("[ATTACK] Ancora al villaggio dopo il secondo tentativo, salto questo ciclo.")
+            send_telegram("⚠️ Non riesco ad aprire la schermata di attacco (forse un popup blocca il villaggio). Salto un ciclo, controlla lo schermo se continua a succedere.")
+            return
+
     adb_tap(*FIND_MATCH_BUTTON)
     time.sleep(2.0)
     adb_tap(*CONFIRM_ATTACK_BUTTON)
@@ -469,13 +514,15 @@ def calibrate_coordinates():
 
 
 def main():
-    global trigger_count
+    global trigger_count, session_start_time
 
     print(f"=== OCR BOT (ADB / BlueStacks) - v{VERSION} ===")
     print("debug.png viene aggiornato ad ogni lettura OCR del bottino")
     print("Ctrl + C per interrompere.\n")
 
     start_time = time.time()
+    session_start_time = start_time
+    write_status(running=True)
     send_telegram(f"▶️ Bot avviato (v{VERSION}). Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
 
     while True:
@@ -485,6 +532,7 @@ def main():
             msg = "Sono passati 50 minuti, fermo il bot per timeout."
             print(f"\n[STOP] {msg}")
             send_telegram(f"⏱ {msg} Attacchi totali: {trigger_count}")
+            write_status(running=False)
             break
 
         trigger_count += 1
@@ -495,13 +543,17 @@ def main():
         except Exception as e:
             print(f"[ERRORE] {e}")
             send_telegram(f"⚠️ Errore durante l'attacco {trigger_count}: {e}")
+            write_status(running=True)
             time.sleep(5.0)
             continue
+
+        write_status(running=True)
 
         if trigger_count >= MAX_TRIGGERS:
             msg = f"✅ Bot ha finito di farmare. Raggiunti {MAX_TRIGGERS} attacchi."
             print(f"[STOP] {msg}")
             send_telegram(msg)
+            write_status(running=False)
             break
 
 
@@ -517,6 +569,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nChiuso dall'utente.")
         send_telegram("⛔ Bot interrotto manualmente dall'utente.")
+        write_status(running=False)
     finally:
         # In esecuzione interattiva (terminale) aspetta un INVIO prima di
         # chiudere la finestra. In background (nohup/launchd, stdin non

@@ -1,6 +1,6 @@
 # OCR Bot — Clash of Clans (headless via ADB)
 
-**Versione:** 1.2 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+**Versione:** 1.4 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
 
 Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
@@ -132,7 +132,9 @@ Tutti i parametri configurabili sono in cima al file (`BOT_COMPLETO_MAC.py`):
 Per poter avviare il bot da fuori casa senza tenere il Mac acceso, il bot gira invece su un **PC Windows** con BlueStacks, tenuto spento quando non serve e risvegliato al bisogno:
 
 - `windows/run_bot.bat` — script che va sul PC Windows: apre BlueStacks, aspetta che ADB veda il device, avvia Clash of Clans, poi lancia `BOT_COMPLETO_MAC.py`. Lanciato da un **Task Scheduler di Windows** (non da `Start-Process` diretto via SSH: la sessione SSH su Windows lega i processi a un Job Object che li uccide alla disconnessione, mentre un task pianificato ne è indipendente). Richiede `windows/cred.bat` (vedi `cred.bat.example`, non versionato) con le stesse credenziali Telegram del Mac.
-- `minipc/telegram_relay.py` — script che gira **sempre acceso** su un secondo PC (nel nostro caso un mini PC Linux), in ascolto sui comandi Telegram `/avvia`, `/stato`, `/stop`. Su `/avvia` manda un pacchetto Wake-on-LAN al PC Windows, aspetta il boot, poi via SSH lancia il task pianificato. Nessuna dipendenza esterna (solo libreria standard Python). Gira come servizio `systemd --user` (vedi `minipc/telegram-relay.service`) con `loginctl enable-linger` abilitato, così resta attivo anche senza sessione utente loggata. Richiede `minipc/cred_relay` (vedi `cred_relay.example`, non versionato).
+- `minipc/telegram_relay.py` — script che gira **sempre acceso** su un secondo PC (nel nostro caso un mini PC Linux), in ascolto sui comandi Telegram `/avvia`, `/stato`, `/stop` (anche come pulsanti/tastiera, non solo testo). Su `/avvia` manda un pacchetto Wake-on-LAN al PC Windows, aspetta il boot, poi via SSH lancia il task pianificato. Nessuna dipendenza esterna (solo libreria standard Python). Gira come servizio `systemd --user` (vedi `minipc/telegram-relay.service`) con `loginctl enable-linger` abilitato, così resta attivo anche senza sessione utente loggata. Richiede `minipc/cred_relay` (vedi `cred_relay.example`, non versionato).
+- `minipc/bot_control.py` — logica condivisa (Wake-on-LAN, SSH, lettura stato) usata sia dal relay Telegram che dalla dashboard web, per non duplicarla.
+- `minipc/dashboard.py` + `minipc/static/index.html` — dashboard web (pulsanti Avvia/Stop, statistiche in tempo reale, log live del bot), servita dal mini PC su `http://<ip-minipc>:8090`, pensata per essere raggiunta solo dalla rete di casa. Gira come servizio `systemd --user` (`minipc/dashboard.service`). Legge il contatore attacchi e l'ultima soglia elisir letta da `status.json`, scritto dal bot stesso (vedi `STATUS_FILE` in `BOT_COMPLETO_MAC.py`).
 
 Requisiti lato PC Windows perché tutta la catena funzioni da spento:
 - Wake-on-LAN abilitato sia nel driver di rete (`Get-NetAdapterPowerManagement`) sia col comando `powercfg`, e **Fast Startup disattivato** (`HiberbootEnabled=0` — altrimenti dopo uno spegnimento completo il WoL non funziona, solo dopo la sospensione)

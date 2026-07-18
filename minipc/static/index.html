@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoC Bot</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: #0d1220;
+    --panel-2: #131a2c;
+    --border: #1f2740;
+    --text: #e6e9f2;
+    --muted: #8a92a8;
+    --accent: #5b8cff;
+    --accent-2: #8b5cf6;
+    --green: #22c55e;
+    --red: #ef4444;
+    --amber: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 20% -10%, #101833 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  header .logo {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+  }
+  header h1 {
+    font-size: 20px;
+    margin: 0;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  header .pc-status {
+    margin-left: auto;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.off { background: var(--muted); }
+
+  main {
+    max-width: 640px;
+    margin: 32px auto;
+    padding: 0 16px;
+  }
+  .eyebrow {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }
+  h2 { margin: 0 0 20px 0; font-size: 22px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .bot-header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .bot-avatar {
+    width: 48px; height: 48px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center; font-size: 26px;
+  }
+  .bot-header .name { font-size: 19px; font-weight: 700; }
+  .bot-header .sub { font-size: 13px; color: var(--muted); }
+
+  .buttons { display: flex; gap: 12px; }
+  button.action {
+    flex: 1;
+    padding: 14px;
+    border-radius: 10px;
+    border: none;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+  button.action:active { transform: scale(0.98); }
+  button.action:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.play { background: var(--green); color: #05230f; }
+  button.stop { background: var(--red); color: #2a0a0a; }
+
+  .stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .stat-card h3 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--muted); margin: 0 0 14px 0; display: flex; align-items: center; gap: 8px;
+  }
+  .stat-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+  .stat-row .v { font-weight: 700; }
+  .stat-row .v.green { color: var(--green); }
+
+  .terminal-header {
+    display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none;
+  }
+  .terminal-header span.title { font-weight: 700; flex: 1; }
+  .terminal-body {
+    margin-top: 14px;
+    background: #01030a;
+    border-radius: 10px;
+    padding: 12px;
+    max-height: 320px;
+    overflow-y: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    display: none;
+  }
+  .terminal-body.open { display: block; }
+  .term-line { padding: 3px 0; color: #c7cde0; white-space: pre-wrap; word-break: break-word; }
+  .term-line .tag-scout { color: #60a5fa; }
+  .term-line .tag-deploy { color: #f59e0b; }
+  .term-line .tag-action { color: #a78bfa; }
+  .term-line .tag-wait { color: #64748b; }
+  .term-line .tag-errore { color: #f87171; }
+  .term-line .tag-telegram { color: #34d399; }
+
+  .action-msg {
+    font-size: 13px;
+    color: var(--amber);
+    margin-top: 10px;
+    min-height: 16px;
+  }
+
+  .chevron { transition: transform 0.15s; color: var(--muted); }
+  .chevron.open { transform: rotate(180deg); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🤖</div>
+  <h1>CoC Bot</h1>
+  <div class="pc-status">
+    <span class="dot" id="pcDot"></span>
+    <span id="pcStatusText">Verifica...</span>
+  </div>
+</header>
+
+<main>
+  <div class="eyebrow">CONTROLLO REMOTO</div>
+  <h2>Dashboard</h2>
+
+  <div class="card">
+    <div class="bot-header">
+      <div class="bot-avatar">🤖</div>
+      <div>
+        <div class="name">CoC Bot</div>
+        <div class="sub">Automazione Clash of Clans</div>
+      </div>
+    </div>
+    <div class="buttons">
+      <button class="action play" id="btnPlay">▶ AVVIA</button>
+      <button class="action stop" id="btnStop">■ STOP</button>
+    </div>
+    <div class="action-msg" id="actionMsg"></div>
+  </div>
+
+  <div class="stats-row">
+    <div class="card stat-card">
+      <h3>📊 Statistiche</h3>
+      <div class="stat-row"><span>Attacchi</span><span class="v" id="statAttacks">–</span></div>
+      <div class="stat-row"><span>Tempo di gioco</span><span class="v green" id="statPlaytime">00:00:00</span></div>
+    </div>
+    <div class="card stat-card">
+      <h3>💰 Risorse</h3>
+      <div class="stat-row"><span>Ultima soglia elisir</span><span class="v" id="statLoot">–</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="terminal-header" id="terminalToggle">
+      <span>📄</span>
+      <span class="title">LIVE TERMINAL</span>
+      <span class="chevron" id="chevron">▾</span>
+    </div>
+    <div class="terminal-body" id="terminalBody"></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+let terminalOpen = false;
+$('terminalToggle').addEventListener('click', () => {
+  terminalOpen = !terminalOpen;
+  $('terminalBody').classList.toggle('open', terminalOpen);
+  $('chevron').classList.toggle('open', terminalOpen);
+  if (terminalOpen) refreshLog();
+});
+
+$('btnPlay').addEventListener('click', async () => {
+  $('btnPlay').disabled = true;
+  await fetch('/api/start', { method: 'POST' });
+});
+
+$('btnStop').addEventListener('click', async () => {
+  $('btnStop').disabled = true;
+  await fetch('/api/stop', { method: 'POST' });
+});
+
+function fmtPlaytime(startTs) {
+  if (!startTs) return '00:00:00';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - startTs));
+  const h = String(Math.floor(s / 3600)).padStart(2, '0');
+  const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const sec = String(s % 60).padStart(2, '0');
+  return `${h}:${m}:${sec}`;
+}
+
+const TAG_CLASS = {
+  '[SCOUT]': 'tag-scout',
+  '[DEPLOY]': 'tag-deploy',
+  '[ACTION]': 'tag-action',
+  '[WAIT]': 'tag-wait',
+  '[ERRORE]': 'tag-errore',
+  '[TELEGRAM]': 'tag-telegram',
+};
+
+function renderLog(lines) {
+  const body = $('terminalBody');
+  const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
+  body.innerHTML = lines.map(line => {
+    const tag = Object.keys(TAG_CLASS).find(t => line.startsWith(t));
+    const cls = tag ? TAG_CLASS[tag] : '';
+    return `<div class="term-line ${cls}">${line.replace(/</g, '&lt;')}</div>`;
+  }).join('');
+  if (atBottom) body.scrollTop = body.scrollHeight;
+}
+
+async function refreshLog() {
+  if (!terminalOpen) return;
+  try {
+    const res = await fetch('/api/log');
+    const data = await res.json();
+    renderLog(data.lines || []);
+  } catch (e) {}
+}
+
+let lastStart = null;
+
+async function refreshStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const s = await res.json();
+
+    $('pcDot').className = 'dot ' + (s.windows_on ? 'on' : 'off');
+    $('pcStatusText').textContent = !s.windows_on
+      ? 'PC spento'
+      : (s.running ? 'Bot in esecuzione' : 'PC acceso, bot fermo');
+
+    $('btnPlay').disabled = !!s.action_running || (s.windows_on && s.running);
+    $('btnStop').disabled = !!s.action_running || !s.windows_on;
+
+    $('actionMsg').textContent = s.action_message || '';
+
+    $('statAttacks').textContent = s.trigger_count ?? '–';
+    $('statLoot').textContent = s.last_loot != null ? s.last_loot.toLocaleString('it-IT') : '–';
+    lastStart = s.running ? s.session_start_time : null;
+  } catch (e) {}
+}
+
+setInterval(() => {
+  $('statPlaytime').textContent = fmtPlaytime(lastStart);
+}, 1000);
+
+refreshStatus();
+refreshLog();
+setInterval(refreshStatus, 3000);
+setInterval(refreshLog, 4000);
+</script>
+
+</body>
+</html>
