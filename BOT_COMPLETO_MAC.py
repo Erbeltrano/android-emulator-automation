@@ -22,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.7"
+VERSION = "1.8"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -353,7 +353,9 @@ _config = load_config()
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
 CLICK_INTERVAL_RANGE = (0.10, 0.22)  # intervallo casuale tra un tap e l'altro, invece di uno fisso
 BATTLE_START_MAX_WAIT = 2.0   # attesa fissa dopo aver accettato un bersaglio sopra soglia
-BATTLE_DURATION_WAIT = (60.0, 90.0)  # attesa (min, max) prima di terminare la battaglia da soli
+BATTLE_DURATION_WAIT = (45.0, 120.0)  # attesa (min, max) prima di terminare la battaglia da soli
+                                       # (range allargato in v1.8, la battaglia dura al massimo
+                                       # 3 minuti quindi c'e' margine per piu' variazione)
 
 SESSION_DURATION = _config["session_duration_minutes"] * 60
 MAX_TRIGGERS = _config["max_triggers"]         # numero di attacchi dopo cui il bot si ferma da solo
@@ -389,13 +391,24 @@ def write_status(running):
                 "trigger_count": trigger_count,
                 "priority_resource": priority_resource,
                 "last_resources": last_resources,
+                "session_totals": session_totals,
                 "updated_at": time.time(),
             }, f)
     except Exception as e:
         print(f"[STATUS] Errore scrittura {STATUS_FILE}: {e}")
 
 
-def append_history_entry():
+def format_totals_summary():
+    """Riga di riepilogo del bottino stimato della sessione, per i
+    messaggi Telegram di fine sessione."""
+    t = session_totals
+    return (
+        f"Bottino stimato: 🥇{t['gold']:,} 🧪{t['elixir']:,} 🔮{t['dark_elixir']:,}"
+        .replace(",", ".")
+    )
+
+
+def append_history_entry(end_reason="completata"):
     """Aggiunge un riepilogo della sessione appena conclusa a history.json,
     letto dalla dashboard per lo storico. Tiene solo le ultime 50 sessioni.
     """
@@ -407,6 +420,7 @@ def append_history_entry():
         "priority_resource": priority_resource,
         "totals": session_totals,
         "version": VERSION,
+        "end_reason": end_reason,
     }
     try:
         history = []
@@ -699,6 +713,17 @@ def wait_for_battle_start(fixed_wait=BATTLE_START_MAX_WAIT):
     return True
 
 
+def maybe_hesitate(chance=0.25, pause_range=(2.0, 6.0)):
+    """Pausa di 'esitazione' casuale: non capita ad ogni attacco (solo
+    con probabilita' `chance`), per non introdurre comunque un ritardo
+    fisso e prevedibile ad ogni ciclo. Randomizzazione piu' spinta della
+    v1.8, oltre a quella "leggera" sui tap gia' presente dalla v1.7."""
+    if random.random() < chance:
+        pause = random.uniform(*pause_range)
+        print(f"[WAIT] Pausa di esitazione ({pause:.1f}s)...")
+        time.sleep(pause)
+
+
 def run_attack():
     """Un ciclo completo: cerca avversario, valuta, attacca, aspetta la
     fine della battaglia, torna al villaggio. Ogni fase verifica lo stato
@@ -706,6 +731,7 @@ def run_attack():
     torna al villaggio prima del previsto) il ciclo si interrompe subito
     invece di continuare a schierare truppe alla cieca.
     """
+    maybe_hesitate()
     # A volte un popup imprevisto sopra al villaggio (es. "Miglioramento
     # completato!", offerte, eventi) assorbe il tap su "Attacco!": la
     # sequenza di tap successivi (pensati per le schermate seguenti) allora
@@ -748,6 +774,7 @@ def run_attack():
         print("[ATTACK] Siamo al villaggio invece che in battaglia: non schiero nulla.")
         return
 
+    maybe_hesitate(chance=0.2, pause_range=(1.5, 4.0))
     deploy_army()
 
     wait_time = random.uniform(*BATTLE_DURATION_WAIT)
@@ -823,8 +850,15 @@ def main():
 
     start_time = time.time()
     session_start_time = start_time
+
+    # Sessioni un po' irregolari invece di fermarsi sempre esattamente allo
+    # stesso numero di attacchi/minuti (v1.8): variano di poco ad ogni
+    # avvio, cosi' non c'e' un pattern fisso riconoscibile da fuori.
+    session_max_triggers = max(1, MAX_TRIGGERS - random.randint(0, 2))
+    session_duration = max(300.0, SESSION_DURATION - random.uniform(0, 300))
+
     write_status(running=True)
-    send_telegram(f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
+    send_telegram(f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. Farà al massimo {session_max_triggers} attacchi o {int(session_duration/60)} minuti.")
 
     # Se ADB/BlueStacks va giu' a meta' sessione (es. crash dell'emulatore),
     # ogni attacco fallisce subito con un'eccezione: senza un limite, il
@@ -838,16 +872,16 @@ def main():
     while True:
         now = time.time()
 
-        if now - start_time > SESSION_DURATION:
-            msg = "Sono passati 50 minuti, fermo il bot per timeout."
+        if now - start_time > session_duration:
+            msg = f"Sono passati {int(session_duration/60)} minuti, fermo il bot per timeout."
             print(f"\n[STOP] {msg}")
-            send_telegram(f"⏱ {msg} Attacchi totali: {trigger_count}")
+            send_telegram(f"⏱ {msg} Attacchi totali: {trigger_count}\n{format_totals_summary()}")
             write_status(running=False)
-            append_history_entry()
+            append_history_entry(end_reason="timeout")
             break
 
         trigger_count += 1
-        print(f"\n[ATTACCO {trigger_count}/{MAX_TRIGGERS}]")
+        print(f"\n[ATTACCO {trigger_count}/{session_max_triggers}]")
 
         try:
             run_attack()
@@ -859,7 +893,7 @@ def main():
                 print(f"[STOP] {msg}")
                 send_telegram(f"🛑 {msg} Ultimo errore: {e}\nControlla che BlueStacks/ADB siano ok.")
                 write_status(running=False)
-                append_history_entry()
+                append_history_entry(end_reason="errori")
                 break
             send_telegram(f"⚠️ Errore durante l'attacco {trigger_count}: {e}")
             write_status(running=True)
@@ -869,10 +903,10 @@ def main():
         consecutive_errors = 0
         write_status(running=True)
 
-        if trigger_count >= MAX_TRIGGERS:
-            msg = f"✅ Bot ha finito di farmare. Raggiunti {MAX_TRIGGERS} attacchi."
+        if trigger_count >= session_max_triggers:
+            msg = f"✅ Bot ha finito di farmare. Raggiunti {trigger_count} attacchi."
             print(f"[STOP] {msg}")
-            send_telegram(msg)
+            send_telegram(f"{msg}\n{format_totals_summary()}")
             write_status(running=False)
             append_history_entry()
             break

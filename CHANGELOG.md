@@ -2,6 +2,14 @@
 
 Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello basta `git log`. Il numero di versione è quello in `VERSION` in cima a `BOT_COMPLETO_MAC.py`.
 
+## v1.8 — Randomizzazione più spinta, storico più ricco, notifiche migliori, watchdog
+- **Randomizzazione più spinta** (pianificata dalla v1.7): ogni sessione ora ha un numero massimo di attacchi e una durata leggermente diversi dal valore configurato (fino a 2 attacchi in meno, fino a 5 minuti in meno), invece di fermarsi sempre esattamente allo stesso punto. Pause di "esitazione" casuali (2-6s prima di un attacco, 1.5-4s prima di schierare) che non capitano ad ogni ciclo. Range di attesa a fine battaglia allargato (45-120s invece di 60-90s).
+- **Storico sessioni più ricco**: ora registra anche le sessioni fermate manualmente da dashboard/Telegram (prima solo quelle finite da sole - fine cicli, timeout, troppi errori), con un campo "come è finita" visibile in tabella. Nuovo grafico a barre (attacchi per sessione nel tempo) sopra la tabella nella dashboard.
+- **Notifica Telegram di fine sessione più completa**: include ora il bottino stimato totale (oro/elisir/dark elisir), non solo il numero di attacchi.
+- **Controllo periodico "il bot è ancora vivo"**: il relay Telegram (che vive sul mini PC sempre acceso) controlla ogni 5 minuti se il PC Windows è ancora raggiungibile mentre una sessione risultava in corso; se sparisce dalla rete senza un messaggio di fine sessione (crash, riavvio inatteso, blackout), avvisa via Telegram invece di lasciare che nessuno se ne accorga.
+- **Perché:** il timore di ban con un pattern troppo prevedibile resta valido anche a sessione ormai "collaudata"; lo storico/notifiche più ricchi servono a capire cosa è successo senza dover controllare i log a mano; il watchdog copre lo scenario (successo dal vivo: un blackout notturno) in cui il PC sparisce e nessuno se ne accorge finché non si prova a usare il bot.
+- IP del mini PC (MINIPC_IP) fissato via riserva DHCP, come già fatto per il PC Windows: nessuna modifica al codice necessaria.
+
 ## v1.7 — Nuovo esercito (drago elettrico + macchina d'assedio), deploy più affidabile, randomizzazione leggera
 - Aggiornato l'esercito a 10 draghi elettrici + 1 macchina d'assedio (mongolfiera d'assedio): ogni slot truppa ora ha il proprio numero di tap invece di un unico conteggio condiviso pensato per truppe con lo stesso numero di unità. Posizioni della barra truppe/eroi ricalibrate dal vivo su screenshot ADB reali (presa in scouting E durante la battaglia vera, che hanno lo stesso layout).
 - **Deploy molto più affidabile dopo diversi giri di test dal vivo:**

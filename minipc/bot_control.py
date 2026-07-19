@@ -121,6 +121,7 @@ def get_bot_status():
         "trigger_count": status_data.get("trigger_count", 0),
         "priority_resource": status_data.get("priority_resource"),
         "last_resources": status_data.get("last_resources"),
+        "session_totals": status_data.get("session_totals"),
         "session_start_time": status_data.get("session_start_time"),
         "version": status_data.get("version"),
     }
@@ -175,6 +176,50 @@ def start_bot(progress=lambda msg: None):
     return False
 
 
+def _record_manual_stop():
+    """Aggiunge a history.json un riepilogo della sessione interrotta a
+    mano, prima di uccidere il processo: altrimenti stop manuali (da
+    dashboard o Telegram) sparivano dallo storico, che registrava solo le
+    sessioni finite da sole (fine cicli/timeout/troppi errori).
+    """
+    status = get_bot_status()
+    if not status.get("running"):
+        return  # nessuna sessione attiva, niente da registrare
+
+    entry = {
+        "start": status.get("session_start_time"),
+        "end": time.time(),
+        "duration_minutes": (
+            round((time.time() - status["session_start_time"]) / 60, 1)
+            if status.get("session_start_time") else None
+        ),
+        "trigger_count": status.get("trigger_count", 0),
+        "priority_resource": status.get("priority_resource"),
+        "totals": status.get("session_totals") or {"gold": 0, "elixir": 0, "dark_elixir": 0},
+        "version": status.get("version"),
+        "end_reason": "manuale",
+    }
+
+    ok, out = ssh_run(f"powershell -Command \"Get-Content '{HISTORY_PATH}' -ErrorAction SilentlyContinue\"")
+    history = []
+    if ok and out.strip():
+        try:
+            history = json.loads(out.strip())
+        except ValueError:
+            history = []
+    history.append(entry)
+    history = history[-50:]
+
+    payload = json.dumps(history)
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    cmd = (
+        "powershell -Command \"[System.IO.File]::WriteAllText("
+        f"'{HISTORY_PATH}', [System.Text.Encoding]::UTF8.GetString("
+        f"[System.Convert]::FromBase64String('{b64}')))\""
+    )
+    ssh_run(cmd)
+
+
 def stop_bot(progress=lambda msg: None):
     """Ferma il bot, chiude BlueStacks e spegne il PC Windows."""
     if not windows_reachable():
@@ -182,6 +227,7 @@ def stop_bot(progress=lambda msg: None):
         return False
 
     progress("⛔ Fermo il bot, chiudo BlueStacks e spengo il PC...")
+    _record_manual_stop()
     ssh_run('powershell -Command "Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force"')
     ssh_run('powershell -Command "Get-Process -Name HD-Player -ErrorAction SilentlyContinue | Stop-Process -Force"')
     ssh_run("shutdown /s /t 5 /f")

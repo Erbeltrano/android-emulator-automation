@@ -199,6 +199,28 @@
   }
   .history-table th { color: var(--muted); font-weight: 600; }
   .history-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+  .chart-wrap { position: relative; margin-bottom: 18px; }
+  .chart-title { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .chart-bar { fill: var(--accent); rx: 3; }
+  .chart-bar:hover { fill: var(--accent-2); cursor: pointer; }
+  .chart-axis-label { fill: var(--muted); font-size: 9px; font-family: inherit; }
+  .chart-tooltip {
+    position: absolute;
+    display: none;
+    background: #01030a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text);
+    pointer-events: none;
+    white-space: nowrap;
+    transform: translate(-50%, -100%);
+    margin-top: -8px;
+    z-index: 10;
+  }
+  .chart-tooltip .t-date { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
 </style>
 </head>
 <body>
@@ -326,6 +348,11 @@
       <span class="chevron" id="historyChevron">▾</span>
     </div>
     <div class="history-body" id="historyBody">
+      <div class="chart-wrap" id="historyChartWrap" style="display:none;">
+        <div class="chart-title">Attacchi per sessione</div>
+        <svg id="historyChart" width="100%" height="120" style="display:block;"></svg>
+        <div class="chart-tooltip" id="chartTooltip"></div>
+      </div>
       <div id="historyContent" class="history-empty">Caricamento...</div>
     </div>
   </div>
@@ -501,34 +528,107 @@ function fmtDate(ts) {
   return new Date(ts * 1000).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+const END_REASON_LABELS = {
+  completata: '✅ completata',
+  timeout: '⏱ timeout',
+  errori: '🛑 errori',
+  manuale: '✋ manuale',
+};
+
+function renderHistoryChart(sessionsChronological) {
+  const svg = $('historyChart');
+  const wrap = $('historyChartWrap');
+  const tooltip = $('chartTooltip');
+
+  if (sessionsChronological.length === 0) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'block';
+
+  const W = svg.clientWidth || 560;
+  const H = 120;
+  const padBottom = 18;
+  const padTop = 6;
+  const n = sessionsChronological.length;
+  const gap = 4;
+  const barW = Math.max(4, Math.min(28, (W - gap * (n - 1)) / n));
+  const totalBarsW = barW * n + gap * (n - 1);
+  const startX = (W - totalBarsW) / 2;
+  const maxAttacks = Math.max(1, ...sessionsChronological.map(s => s.trigger_count || 0));
+  const usableH = H - padBottom - padTop;
+
+  const bars = sessionsChronological.map((s, i) => {
+    const val = s.trigger_count || 0;
+    const barH = Math.max(2, (val / maxAttacks) * usableH);
+    const x = startX + i * (barW + gap);
+    const y = H - padBottom - barH;
+    return `<rect class="chart-bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" rx="3" data-idx="${i}"></rect>`;
+  }).join('');
+
+  // Etichette selettive sull'asse (prima, ultima, e una in mezzo se c'e' spazio) invece di una data su ogni barra
+  const labelIdx = new Set([0, n - 1]);
+  if (n > 4) labelIdx.add(Math.floor(n / 2));
+  const labels = [...labelIdx].map(i => {
+    const x = startX + i * (barW + gap) + barW / 2;
+    const d = new Date(sessionsChronological[i].start * 1000);
+    const text = d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
+    return `<text class="chart-axis-label" x="${x.toFixed(1)}" y="${H - 4}" text-anchor="middle">${text}</text>`;
+  }).join('');
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = bars + labels;
+
+  svg.onmousemove = (e) => {
+    const rect = e.target.closest('.chart-bar');
+    if (!rect) { tooltip.style.display = 'none'; return; }
+    const s = sessionsChronological[parseInt(rect.dataset.idx, 10)];
+    const t = s.totals || {};
+    const fmt = (v) => (v || 0).toLocaleString('it-IT');
+    tooltip.innerHTML = `<div class="t-date">${fmtDate(s.start)}</div>` +
+      `${s.trigger_count ?? '–'} attacchi · ${s.duration_minutes ?? '–'} min<br>` +
+      `🥇${fmt(t.gold)} 🧪${fmt(t.elixir)} 🔮${fmt(t.dark_elixir)}`;
+    const svgBox = svg.getBoundingClientRect();
+    tooltip.style.left = (rect.getBoundingClientRect().left - svgBox.left + parseFloat(rect.getAttribute('width')) / 2) + 'px';
+    tooltip.style.top = (rect.getBoundingClientRect().top - svgBox.top) + 'px';
+    tooltip.style.display = 'block';
+  };
+  svg.onmouseleave = () => { tooltip.style.display = 'none'; };
+}
+
 async function loadHistory() {
   $('historyContent').className = 'history-empty';
   $('historyContent').textContent = 'Caricamento...';
+  $('historyChartWrap').style.display = 'none';
   try {
     const res = await fetch('/api/history');
     const data = await res.json();
-    const sessions = data.sessions || [];
+    const sessions = data.sessions || [];  // più recenti prima (dall'API)
     if (sessions.length === 0) {
       $('historyContent').textContent = 'Nessuna sessione registrata ancora.';
       return;
     }
+    renderHistoryChart([...sessions].reverse());  // il grafico vuole l'ordine cronologico
     const rows = sessions.map(s => {
       const t = s.totals || {};
       const fmt = (v) => (v || 0).toLocaleString('it-IT');
+      const reason = END_REASON_LABELS[s.end_reason] || '–';
       return `<tr>
         <td>${fmtDate(s.start)}</td>
         <td>${s.duration_minutes ?? '–'} min</td>
         <td>${s.trigger_count ?? '–'}</td>
         <td>${s.priority_resource ?? '–'}</td>
         <td>🥇${fmt(t.gold)} 🧪${fmt(t.elixir)} 🔮${fmt(t.dark_elixir)}</td>
+        <td>${reason}</td>
       </tr>`;
     }).join('');
     $('historyContent').className = '';
     $('historyContent').innerHTML = `<table class="history-table">
-      <thead><tr><th>Data</th><th>Durata</th><th>Attacchi</th><th>Priorità</th><th>Bottino stimato</th></tr></thead>
+      <thead><tr><th>Data</th><th>Durata</th><th>Attacchi</th><th>Priorità</th><th>Bottino stimato</th><th>Fine</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   } catch (e) {
+    $('historyChartWrap').style.display = 'none';
     $('historyContent').textContent = 'Errore nel caricamento dello storico.';
   }
 }

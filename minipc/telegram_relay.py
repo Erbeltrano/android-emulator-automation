@@ -110,6 +110,40 @@ def handle_text(text):
         send_message("Usa i pulsanti qui sotto, oppure:\n/avvia - sveglia il PC e avvia il bot\n/stato - controlla se sta girando\n/stop - ferma il bot")
 
 
+# Controllo periodico che il bot non sia "sparito" senza che nessuno se ne
+# accorga: se una sessione risultava in corso e il PC Windows smette
+# improvvisamente di rispondere in rete (crash, riavvio inatteso, blackout),
+# il bot stesso non puo' avvisare via Telegram perche' non c'e' piu'. Il
+# relay, che vive sul mini PC sempre acceso, se ne accorge da fuori.
+WATCHDOG_INTERVAL = 300  # secondi tra un controllo e l'altro
+_watchdog_state = {"was_running": False, "alerted": False}
+
+
+def check_watchdog():
+    try:
+        status = bot_control.get_bot_status()
+    except Exception as e:
+        print(f"[WATCHDOG] Errore controllo stato: {e}")
+        return
+
+    was_running = _watchdog_state["was_running"]
+    now_running = bool(status.get("running"))
+    windows_on = bool(status.get("windows_on"))
+
+    if was_running and not now_running and not windows_on:
+        if not _watchdog_state["alerted"]:
+            send_message(
+                "⚠️ Il PC Windows è sparito dalla rete mentre una sessione sembrava "
+                "in corso (crash, riavvio inatteso o blackout?). Controlla di persona "
+                "quando puoi — il bot non si è fermato da solo con il messaggio di fine sessione."
+            )
+            _watchdog_state["alerted"] = True
+    else:
+        _watchdog_state["alerted"] = False
+
+    _watchdog_state["was_running"] = now_running
+
+
 def main():
     print("[RELAY] Avviato, controllo backlog Telegram...")
 
@@ -133,6 +167,8 @@ def main():
     print(f"[RELAY] Pronto, offset iniziale {offset}. In ascolto...")
     send_message("🤖 Relay pronto. Usa i pulsanti qui sotto.")
 
+    last_watchdog_check = time.time()
+
     while True:
         try:
             updates = get_updates(offset=offset)
@@ -149,6 +185,10 @@ def main():
                 if text:
                     print(f"[RELAY] Comando ricevuto: {text}")
                     handle_text(text)
+
+            if time.time() - last_watchdog_check > WATCHDOG_INTERVAL:
+                check_watchdog()
+                last_watchdog_check = time.time()
         except urllib.error.URLError as e:
             print(f"[RELAY] Errore di rete, riprovo: {e}")
             time.sleep(5)
