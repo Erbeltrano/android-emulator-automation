@@ -247,14 +247,13 @@ HOME_REGION_DARK_ELIXIR = {
 # sorvegliante, campionessa). Esercito: 10 draghi elettrici + 1 macchina
 # d'assedio (mongolfiera d'assedio) - ogni slot ha il proprio numero di tap
 # (10 per il drago, 1 per la macchina d'assedio, che e' un solo mezzo).
-# Posizioni assunte uguali ai primi due slot di quando i tipi di truppa
-# erano 3 (215, 340) - da verificare dal vivo e aggiustare se serve.
+# Posizioni calibrate dal vivo su screenshot ADB reale (non solo assunte).
 TROOP_BAR_Y = 975
 TROOP_SLOTS = [
-    (215, 10),   # drago elettrico x10
+    (197, 10),   # drago elettrico x10
     (340, 1),    # macchina d'assedio (mongolfiera d'assedio), un solo mezzo
 ]
-HERO_SLOTS = [655, 785, 915, 1045]
+HERO_SLOTS = [483, 626, 785, 928]
 
 # Zona di schieramento: tutte le truppe vengono piazzate qui, in un unico
 # passaggio (lato destro/basso della base). Spostata piu' lontana dal bordo
@@ -768,6 +767,15 @@ def main():
     write_status(running=True)
     send_telegram(f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
 
+    # Se ADB/BlueStacks va giu' a meta' sessione (es. crash dell'emulatore),
+    # ogni attacco fallisce subito con un'eccezione: senza un limite, il
+    # ciclo riprovava ogni 5s fino a SESSION_DURATION, mandando un messaggio
+    # Telegram di errore ad ogni tentativo (decine in pochi minuti). Scoperto
+    # dal vivo durante un test. Dopo N errori di fila ci si ferma con un
+    # solo avviso, invece di continuare a martellare alla cieca.
+    MAX_CONSECUTIVE_ERRORS = 3
+    consecutive_errors = 0
+
     while True:
         now = time.time()
 
@@ -785,12 +793,21 @@ def main():
         try:
             run_attack()
         except Exception as e:
+            consecutive_errors += 1
             print(f"[ERRORE] {e}")
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                msg = f"Troppi errori di fila ({consecutive_errors}), mi fermo invece di continuare a riprovare alla cieca."
+                print(f"[STOP] {msg}")
+                send_telegram(f"🛑 {msg} Ultimo errore: {e}\nControlla che BlueStacks/ADB siano ok.")
+                write_status(running=False)
+                append_history_entry()
+                break
             send_telegram(f"⚠️ Errore durante l'attacco {trigger_count}: {e}")
             write_status(running=True)
             time.sleep(5.0)
             continue
 
+        consecutive_errors = 0
         write_status(running=True)
 
         if trigger_count >= MAX_TRIGGERS:

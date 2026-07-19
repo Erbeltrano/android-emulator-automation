@@ -8,6 +8,8 @@ Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello
 - Randomizzazione leggera dei tap di schieramento: piccolo scarto di posizione casuale (non più lo stesso pixel esatto ogni volta), ordine dei punti mescolato, tempi tra un tap e l'altro variabili invece che fissi.
 - **Perché:** timore giustificato di ban con un pattern di gioco troppo identico/prevedibile a ogni attacco; la zona di schieramento fissa (voluta esplicitamente per coerenza) andava comunque adattata perché troppo vicina al bordo di alcune basi.
 - **Nota:** questa è una randomizzazione volutamente leggera. Una randomizzazione più spinta (pause di esitazione, sessioni più irregolari) è pianificata per la v1.8.
+- Posizioni della barra truppe/eroi (`TROOP_SLOTS`, `HERO_SLOTS`) ricalibrate dal vivo su uno screenshot ADB reale con il nuovo esercito, non più assunte.
+- **Bug trovato in un test dal vivo:** se ADB/BlueStacks va giù a metà sessione (es. l'emulatore crasha), ogni attacco falliva subito con un'eccezione e il ciclo riprovava ogni 5 secondi fino a fine sessione, mandando un messaggio Telegram di errore ad ogni tentativo (decine in pochi minuti). Ora dopo 3 errori consecutivi il bot si ferma con un solo avviso invece di continuare a martellare alla cieca.
 
 ## v1.6 — Attacchi basati sulla risorsa scarsa in casa + storico sessioni
 - Prima di iniziare a farmare, il bot ora legge oro/elisir/dark elisir in casa e capisce quale risorsa scarseggia di più (rispetto a soglie "scarso" configurabili dalla dashboard); per tutta la sessione attacca solo bersagli ricchi di *quella* risorsa, invece di guardare solo l'elisir come prima. Oro/elisir/dark elisir hanno ora anche soglie di attacco separate, non un'unica soglia elisir.
