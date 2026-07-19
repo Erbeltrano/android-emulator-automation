@@ -30,6 +30,7 @@ CONFIG_PATH = r"C:\Users\simon\config.json"
 HISTORY_PATH = r"C:\Users\simon\history.json"
 
 DEFAULT_SETTINGS = {
+    "priority_mode": "auto",
     "threshold_gold": 800000,
     "threshold_elixir": 800000,
     "threshold_dark_elixir": 3000,

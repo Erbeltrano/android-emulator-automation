@@ -317,9 +317,15 @@ CONFIRM_END_BATTLE_BUTTON = (1150, 670)
 # se il file non c'e' o e' incompleto. Le soglie "threshold_*" sono il
 # bottino minimo del bersaglio per attaccare (una per risorsa, usata solo
 # quella della risorsa prioritaria della sessione); le "home_low_*" sono
-# la soglia sotto la quale una risorsa in casa e' considerata scarsa.
+# la soglia sotto la quale una risorsa in casa e' considerata scarsa (usate
+# solo se priority_mode e' "auto"). "priority_mode" sceglie come decidere
+# la risorsa prioritaria: "auto" (rileva da solo cosa scarseggia in casa,
+# comportamento della v1.6) oppure forzata a "gold"/"elixir"/"dark_elixir"
+# per saltare il rilevamento e attaccare sempre in base a quella, con la
+# sua threshold_* configurata.
 CONFIG_FILE = "config.json"
 _CONFIG_DEFAULTS = {
+    "priority_mode": "auto",
     "threshold_gold": 800000,
     "threshold_elixir": 800000,
     "threshold_dark_elixir": 3000,
@@ -793,8 +799,14 @@ def main():
             break
         time.sleep(1.0)
 
-    priority_resource, home = determine_priority_resource()
-    print(f"[HOME] Risorse in casa: {home} -> risorsa prioritaria della sessione: {priority_resource}")
+    if _config["priority_mode"] in ("gold", "elixir", "dark_elixir"):
+        # Priorita' forzata dalla dashboard: salta il rilevamento
+        # automatico (e la lettura OCR delle risorse in casa, non serve).
+        priority_resource = _config["priority_mode"]
+        print(f"[HOME] Risorsa prioritaria forzata dalla dashboard: {priority_resource}")
+    else:
+        priority_resource, home = determine_priority_resource()
+        print(f"[HOME] Risorse in casa: {home} -> risorsa prioritaria della sessione: {priority_resource}")
 
     start_time = time.time()
     session_start_time = start_time
