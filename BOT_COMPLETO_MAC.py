@@ -363,8 +363,8 @@ trigger_count = 0
 
 # Risorsa su cui la sessione e' concentrata (decisa da determine_priority_resource()
 # in main(), prima del loop di attacco: quella piu' scarsa in casa rispetto
-# alle soglie home_low_*, o "elixir" di default se nessuna scarseggia).
-priority_resource = "elixir"
+# alle soglie home_low_*, o "gold" di default se nessuna scarseggia).
+priority_resource = "gold"
 
 # Bottino stimato accumulato nella sessione (somma del bottino "disponibile"
 # visto in fase di scouting sui bersagli attaccati, non il bottino
@@ -556,8 +556,10 @@ def read_home_resources():
 def determine_priority_resource():
     """Decide su quale risorsa concentrare la sessione: quella con il
     deficit maggiore rispetto alla propria soglia 'basso' (home_low_*). Se
-    nessuna risorsa e' sotto soglia (o l'OCR fallisce su tutte), resta
-    l'elisir di default (stesso comportamento di prima di questa funzione).
+    nessuna risorsa e' sotto soglia (o l'OCR fallisce su tutte), il
+    default e' l'oro (non l'elisir): scelta esplicita dell'utente, visto
+    che in pratica oro/elisir restano quasi sempre ben sopra soglia su un
+    account sviluppato e la scelta di default capita spesso.
     """
     home = read_home_resources()
     if all(v is None for v in home.values()):
@@ -577,7 +579,7 @@ def determine_priority_resource():
             deficits[resource] = low - amount
 
     if not deficits:
-        return "elixir", home
+        return "gold", home
     return max(deficits, key=deficits.get), home
 
 
