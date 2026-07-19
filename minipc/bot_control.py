@@ -48,14 +48,23 @@ WAKE_SSH_RETRY_DELAY = 5
 def send_magic_packet(mac=WINDOWS_MAC, repeats=5):
     """Manda il pacchetto Wake-on-LAN piu' volte: un singolo invio UDP
     non e' garantito e in pratica capita che si perda.
+
+    Manda sia al broadcast di sottorete (LAN_BROADCAST_IP) che a quello
+    globale (255.255.255.255): su alcune reti/interfacce il secondo da'
+    OSError "No route to host" (visto dal vivo su questo Mac). Ogni invio
+    e' avvolto nel proprio try/except cosi' un target che fallisce non
+    interrompe ne' l'altro target ne' i tentativi successivi del ciclo.
     """
     mac_bytes = bytes.fromhex(mac.replace(":", "").replace("-", ""))
     packet = b"\xff" * 6 + mac_bytes * 16
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     for _ in range(repeats):
-        sock.sendto(packet, (WINDOWS_BROADCAST, 9))
-        sock.sendto(packet, ("255.255.255.255", 9))
+        for target in (WINDOWS_BROADCAST, "255.255.255.255"):
+            try:
+                sock.sendto(packet, (target, 9))
+            except OSError:
+                pass
         time.sleep(1)
     sock.close()
 

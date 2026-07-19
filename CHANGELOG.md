@@ -2,8 +2,8 @@
 
 Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello basta `git log`. Il numero di versione è quello in `VERSION` in cima a `BOT_COMPLETO_MAC.py`.
 
-## v1.7 — Esercito a drago elettrico singolo, fix zona di schieramento, randomizzazione leggera
-- L'esercito è passato a un solo tipo di truppa (10 draghi elettrici): la barra truppe ora ha un solo slot da tappare invece di ciclare su più tipi diversi.
+## v1.7 — Nuovo esercito (drago elettrico + macchina d'assedio), fix zona di schieramento, randomizzazione leggera
+- Aggiornato l'esercito a 10 draghi elettrici + 1 macchina d'assedio (mongolfiera d'assedio): ogni slot truppa ora ha il proprio numero di tap (10 per il drago, 1 per la macchina d'assedio) invece di un unico conteggio condiviso pensato per truppe con lo stesso numero di unità.
 - La zona di schieramento è stata spostata più lontana dal bordo base (+80 orizzontale, +60 verticale) perché capitava che alcuni punti cadessero nella "zona rossa" (non valida) su basi con mura/edifici più estesi di quella su cui era stata calibrata la zona originale, schierando solo parte delle truppe. Aggiustamento fatto senza rilettura dal vivo del colore verde/rosso, da verificare/ritarare se continua a capitare.
 - Randomizzazione leggera dei tap di schieramento: piccolo scarto di posizione casuale (non più lo stesso pixel esatto ogni volta), ordine dei punti mescolato, tempi tra un tap e l'altro variabili invece che fissi.
 - **Perché:** timore giustificato di ban con un pattern di gioco troppo identico/prevedibile a ogni attacco; la zona di schieramento fissa (voluta esplicitamente per coerenza) andava comunque adattata perché troppo vicina al bordo di alcune basi.

@@ -244,14 +244,16 @@ HOME_REGION_DARK_ELIXIR = {
 
 # Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
 # TROOP_SLOTS sono le truppe, HERO_SLOTS gli eroi (regina, re, gran
-# sorvegliante, campionessa). Esercito a un solo tipo di truppa (10 draghi
-# elettrici): un solo slot invece dei 3 di quando l'esercito era misto.
-# ATTENZIONE: con un solo tipo di truppa la barra potrebbe posizionare
-# l'icona in un punto leggermente diverso da quando erano 3 - assunto che
-# resti ancorata a sinistra come lo slot piu' a sinistra di prima (215).
-# Verificare dal vivo alla prossima sessione e aggiustare se serve.
+# sorvegliante, campionessa). Esercito: 10 draghi elettrici + 1 macchina
+# d'assedio (mongolfiera d'assedio) - ogni slot ha il proprio numero di tap
+# (10 per il drago, 1 per la macchina d'assedio, che e' un solo mezzo).
+# Posizioni assunte uguali ai primi due slot di quando i tipi di truppa
+# erano 3 (215, 340) - da verificare dal vivo e aggiustare se serve.
 TROOP_BAR_Y = 975
-TROOP_SLOTS = [215]
+TROOP_SLOTS = [
+    (215, 10),   # drago elettrico x10
+    (340, 1),    # macchina d'assedio (mongolfiera d'assedio), un solo mezzo
+]
 HERO_SLOTS = [655, 785, 915, 1045]
 
 # Zona di schieramento: tutte le truppe vengono piazzate qui, in un unico
@@ -268,7 +270,6 @@ DEPLOY_POINTS = [
     (1480, 660), (1430, 710), (1380, 760), (1330, 780), (1280, 800),
     (1230, 820), (1180, 840), (1130, 860), (1080, 880),
 ]
-TAPS_PER_TROOP = 10  # 10 draghi elettrici: un tap per drago, nessun tap in eccesso
 HERO_DEPLOY_POINT = (1430, 610)
 
 # Variazione casuale (in pixel) sui punti di schieramento, per non tappare
@@ -551,10 +552,10 @@ def deploy_army():
     scroll_down_by_drag()
 
     print("[DEPLOY] Schiero le truppe...")
-    for slot_x in TROOP_SLOTS:
+    for slot_x, taps in TROOP_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
         time.sleep(random.uniform(0.12, 0.20))
-        deploy_points = list(DEPLOY_POINTS[:TAPS_PER_TROOP])
+        deploy_points = list(DEPLOY_POINTS[:taps])
         random.shuffle(deploy_points)
         for (dx, dy) in deploy_points:
             adb_tap_jittered(dx, dy)
