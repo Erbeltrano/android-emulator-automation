@@ -2,6 +2,13 @@
 
 Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello basta `git log`. Il numero di versione è quello in `VERSION` in cima a `BOT_COMPLETO_MAC.py`.
 
+## v1.7 — Esercito a drago elettrico singolo, fix zona di schieramento, randomizzazione leggera
+- L'esercito è passato a un solo tipo di truppa (10 draghi elettrici): la barra truppe ora ha un solo slot da tappare invece di ciclare su più tipi diversi.
+- La zona di schieramento è stata spostata più lontana dal bordo base (+80 orizzontale, +60 verticale) perché capitava che alcuni punti cadessero nella "zona rossa" (non valida) su basi con mura/edifici più estesi di quella su cui era stata calibrata la zona originale, schierando solo parte delle truppe. Aggiustamento fatto senza rilettura dal vivo del colore verde/rosso, da verificare/ritarare se continua a capitare.
+- Randomizzazione leggera dei tap di schieramento: piccolo scarto di posizione casuale (non più lo stesso pixel esatto ogni volta), ordine dei punti mescolato, tempi tra un tap e l'altro variabili invece che fissi.
+- **Perché:** timore giustificato di ban con un pattern di gioco troppo identico/prevedibile a ogni attacco; la zona di schieramento fissa (voluta esplicitamente per coerenza) andava comunque adattata perché troppo vicina al bordo di alcune basi.
+- **Nota:** questa è una randomizzazione volutamente leggera. Una randomizzazione più spinta (pause di esitazione, sessioni più irregolari) è pianificata per la v1.8.
+
 ## v1.6 — Attacchi basati sulla risorsa scarsa in casa + storico sessioni
 - Prima di iniziare a farmare, il bot ora legge oro/elisir/dark elisir in casa e capisce quale risorsa scarseggia di più (rispetto a soglie "scarso" configurabili dalla dashboard); per tutta la sessione attacca solo bersagli ricchi di *quella* risorsa, invece di guardare solo l'elisir come prima. Oro/elisir/dark elisir hanno ora anche soglie di attacco separate, non un'unica soglia elisir.
 - La dashboard ha una nuova sezione **Storico sessioni**: riepilogo (data, durata, attacchi, risorsa prioritaria, bottino stimato) delle ultime sessioni, salvato in `history.json` sul PC Windows a fine sessione.

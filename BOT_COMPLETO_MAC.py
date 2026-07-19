@@ -22,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.6"
+VERSION = "1.7"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -164,6 +164,17 @@ def adb_tap(x, y):
     adb("shell", "input", "tap", str(x), str(y), device=DEVICE)
 
 
+def adb_tap_jittered(x, y, jitter=None):
+    """Come adb_tap, ma con un piccolo scarto casuale di posizione (DEPLOY_JITTER_PX
+    di default): usato per lo schieramento, per non tappare sempre il pixel
+    esatto identico ad ogni attacco. Non usarlo sui pulsanti dell'interfaccia
+    (troppo piccoli, un tap fuori bersaglio li mancherebbe).
+    """
+    if jitter is None:
+        jitter = DEPLOY_JITTER_PX
+    adb_tap(x + random.randint(-jitter, jitter), y + random.randint(-jitter, jitter))
+
+
 def adb_swipe(x1, y1, x2, y2, duration_ms=600):
     adb(
         "shell", "input", "swipe",
@@ -232,23 +243,40 @@ HOME_REGION_DARK_ELIXIR = {
 }
 
 # Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
-# I primi TROOP_SLOTS sono le truppe (drago, barile, macchina d'assedio, ...),
-# gli HERO_SLOTS gli eroi (regina, re, gran sorvegliante, campionessa).
-# Adatta il numero/ordine se il tuo esercito e' diverso.
+# TROOP_SLOTS sono le truppe, HERO_SLOTS gli eroi (regina, re, gran
+# sorvegliante, campionessa). Esercito a un solo tipo di truppa (10 draghi
+# elettrici): un solo slot invece dei 3 di quando l'esercito era misto.
+# ATTENZIONE: con un solo tipo di truppa la barra potrebbe posizionare
+# l'icona in un punto leggermente diverso da quando erano 3 - assunto che
+# resti ancorata a sinistra come lo slot piu' a sinistra di prima (215).
+# Verificare dal vivo alla prossima sessione e aggiustare se serve.
 TROOP_BAR_Y = 975
-TROOP_SLOTS = [215, 340, 515]
+TROOP_SLOTS = [215]
 HERO_SLOTS = [655, 785, 915, 1045]
 
 # Zona di schieramento: tutte le truppe vengono piazzate qui, in un unico
-# passaggio (lato destro/basso della base, quello testato con successo:
-# 93% danno, 2 stelle). Non spostare truppe in zone diverse ad ogni run.
+# passaggio (lato destro/basso della base). Spostata piu' lontana dal bordo
+# base rispetto alla versione originale (+80 orizzontale, +60 verticale):
+# nei test dal vivo capitava che alcuni di questi punti cadessero nella
+# "zona rossa" (non valida, troppo vicina a mura/edifici) su basi con un
+# layout diverso da quella su cui era stata calibrata la zona originale,
+# facendo schierare solo parte delle truppe. Aggiustamento fatto "al buio"
+# (senza rilettura dal vivo del colore verde/rosso): da verificare/ritarare
+# se continua a capitare.
 DEPLOY_POINTS = [
-    (1300, 550), (1350, 500), (1400, 450), (1450, 400), (1500, 350), (1550, 300),
-    (1400, 600), (1350, 650), (1300, 700), (1250, 720), (1200, 740),
-    (1150, 760), (1100, 780), (1050, 800), (1000, 820),
+    (1380, 610), (1430, 560), (1480, 510), (1530, 460), (1580, 410), (1630, 360),
+    (1480, 660), (1430, 710), (1380, 760), (1330, 780), (1280, 800),
+    (1230, 820), (1180, 840), (1130, 860), (1080, 880),
 ]
-TAPS_PER_TROOP = 10  # oltre alle truppe disponibili i tap in eccesso non fanno nulla
-HERO_DEPLOY_POINT = (1350, 550)
+TAPS_PER_TROOP = 10  # 10 draghi elettrici: un tap per drago, nessun tap in eccesso
+HERO_DEPLOY_POINT = (1430, 610)
+
+# Variazione casuale (in pixel) sui punti di schieramento, per non tappare
+# sempre il pixel esatto identico ad ogni attacco (piu' umano, meno pattern
+# riconoscibile). Randomizzazione "leggera" per la v1.7: qualcosa di piu'
+# spinto (pause di esitazione, sessioni piu' irregolari) e' pianificato
+# per la v1.8.
+DEPLOY_JITTER_PX = 8
 
 # Scroll verso il basso appena inizia la battaglia, prima di schierare:
 # porta la vista nella posizione giusta per raggiungere la zona di
@@ -298,7 +326,7 @@ def load_config():
 _config = load_config()
 
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
-CLICK_INTERVAL = 0.15
+CLICK_INTERVAL_RANGE = (0.10, 0.22)  # intervallo casuale tra un tap e l'altro, invece di uno fisso
 BATTLE_START_MAX_WAIT = 2.0   # attesa fissa dopo aver accettato un bersaglio sopra soglia
 BATTLE_DURATION_WAIT = (60.0, 90.0)  # attesa (min, max) prima di terminare la battaglia da soli
 
@@ -514,30 +542,37 @@ def deploy_army():
     """Scrolla nella posizione giusta, poi schiera TUTTE le truppe e gli
     eroi in un unico passaggio, sempre nella stessa zona (lato destro/basso
     della base) invece di sperimentare posizioni diverse ad ogni attacco.
+
+    I tap di schieramento hanno un piccolo scarto casuale di posizione e
+    ordine (DEPLOY_JITTER_PX, ordine mescolato) e i tempi tra un tap e
+    l'altro variano in un range invece di essere fissi: randomizzazione
+    "leggera" per rendere il pattern meno riconoscibile (v1.7).
     """
     scroll_down_by_drag()
 
     print("[DEPLOY] Schiero le truppe...")
     for slot_x in TROOP_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(0.15)
-        for (dx, dy) in DEPLOY_POINTS[:TAPS_PER_TROOP]:
-            adb_tap(dx, dy)
-            time.sleep(CLICK_INTERVAL)
+        time.sleep(random.uniform(0.12, 0.20))
+        deploy_points = list(DEPLOY_POINTS[:TAPS_PER_TROOP])
+        random.shuffle(deploy_points)
+        for (dx, dy) in deploy_points:
+            adb_tap_jittered(dx, dy)
+            time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
 
     print("[DEPLOY] Schiero gli eroi...")
     for slot_x in HERO_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(0.15)
-        adb_tap(*HERO_DEPLOY_POINT)
-        time.sleep(CLICK_INTERVAL)
+        time.sleep(random.uniform(0.12, 0.20))
+        adb_tap_jittered(*HERO_DEPLOY_POINT)
+        time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
 
-    time.sleep(2.0)
+    time.sleep(random.uniform(1.6, 2.4))
 
     print("[DEPLOY] Attivo le abilità eroi...")
     for slot_x in HERO_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(0.2)
+        time.sleep(random.uniform(0.16, 0.26))
 
 
 # Il countdown di matchmaking del gioco dura ~28-30s da quando un avversario
