@@ -10,8 +10,18 @@ import cv2
 import pytesseract
 import requests   # per Telegram
 
+# La console di Windows lanciata da Task Scheduler puo' usare una code page
+# che non sa stampare le emoji usate nei messaggi di stato (es. "✅"): senza
+# questo, un print con un'emoji manda un'eccezione non gestita che finiva
+# dritta nel blocco finally piu' in basso, bloccando il processo per sempre
+# in attesa di un INVIO che in un avvio automatico non arriva mai. Scoperto
+# durante un test dal vivo.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.5"
+VERSION = "1.5.1"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -595,9 +605,13 @@ if __name__ == "__main__":
         send_telegram("⛔ Bot interrotto manualmente dall'utente.")
         write_status(running=False)
     finally:
-        # In esecuzione interattiva (terminale) aspetta un INVIO prima di
-        # chiudere la finestra. In background (nohup/launchd, stdin non
-        # collegato a un terminale) salta l'attesa: altrimenti il processo
-        # resterebbe bloccato per sempre in attesa di input che non arriva.
-        if sys.stdin.isatty():
+        # sys.stdin.isatty() sembrava un modo per distinguere un avvio
+        # interattivo da uno in background, ma la finestra di console aperta
+        # da Task Scheduler (run_bot.bat, sia da Telegram che dalla
+        # dashboard) e' anch'essa una console vera: isatty() risultava True
+        # anche li', quindi il bot restava bloccato per sempre in attesa di
+        # un INVIO che nessuno avrebbe mai premuto (scoperto perche' un
+        # avvio di test non si fermava mai da solo). L'attesa ora e'
+        # esplicita, solo per chi lancia lo script a mano con questo flag.
+        if "--pause-on-exit" in sys.argv:
             input("Script terminato. Premi INVIO per chiudere la finestra...")

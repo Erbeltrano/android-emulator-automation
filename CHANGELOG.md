@@ -2,6 +2,10 @@
 
 Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello basta `git log`. Il numero di versione è quello in `VERSION` in cima a `BOT_COMPLETO_MAC.py`.
 
+## v1.5.1 — Corregge un blocco a fine sessione
+- A fine sessione (naturale o per `MAX_TRIGGERS`), un `print` con un'emoji (es. "✅") su una console Windows con code page limitata mandava un'eccezione non gestita; il codice finiva in un blocco `finally` che aspettava un INVIO da tastiera per chiudere la finestra — INVIO che in un avvio automatico (Task Scheduler/Telegram) non arriva mai, bloccando il processo per sempre.
+- **Perché:** scoperto durante un test dal vivo di una versione in sviluppo. Un bot "appeso" così impedisce anche ai lanci successivi di partire (lo scheduled task ignora un avvio se ne vede già uno "in corso") — probabilmente la causa di eventuali casi passati in cui il bot sembrava "non partire" da Telegram. Corretto forzando l'encoding UTF-8 su stdout/stderr e rendendo l'attesa dell'INVIO opt-in (flag `--pause-on-exit`) invece che automatica per qualunque console.
+
 ## v1.5 — Parametri di farming configurabili dalla dashboard
 - La dashboard ha ora una sezione **Impostazioni** (soglia elisir minima per attaccare, numero massimo di attacchi, durata sessione) salvata in `config.json` sul PC Windows e letta dal bot ad ogni avvio.
 - **Perché:** evitare di dover modificare il codice e ridistribuire lo script ogni volta che si vuole cambiare la strategia di farming (es. abbassare la soglia in orari con meno basi ricche disponibili).
