@@ -15,13 +15,14 @@ import requests   # per Telegram
 # questo, un print con un'emoji manda un'eccezione non gestita che finiva
 # dritta nel blocco finally piu' in basso, bloccando il processo per sempre
 # in attesa di un INVIO che in un avvio automatico non arriva mai. Scoperto
-# durante un test dal vivo.
+# durante un test dal vivo della v1.6 (il bot restava "appeso" a fine
+# sessione invece di fermarsi).
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.5.1"
+VERSION = "1.6"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -186,13 +187,48 @@ CONFIRM_ATTACK_BUTTON = (1697, 960)  # "Attacco!" nella schermata riepilogo eser
 SKIP_BUTTON = (1745, 780)            # "Avanti" - scarta l'avversario e ricerca
 RETURN_HOME_BUTTON = (955, 985)      # "Torna al villaggio" a fine battaglia
 
-# Regione "Bottino disponibile" (elisir) nella schermata di scouting,
-# prima che la battaglia inizi. Formato (left, top, width, height).
-OCR_REGION = {
+# Regioni "Bottino disponibile" nella schermata di scouting, prima che la
+# battaglia inizi. Formato (left, top, width, height). Calibrate dal vivo
+# (screenshot 1920x1080 su BlueStacks).
+OCR_REGION_ELIXIR = {
     "left": 88,
     "top": 203,
     "width": 180,
     "height": 30,
+}
+OCR_REGION_GOLD = {
+    "left": 68,
+    "top": 149,
+    "width": 180,
+    "height": 30,
+}
+OCR_REGION_DARK_ELIXIR = {
+    "left": 61,
+    "top": 263,
+    "width": 180,
+    "height": 30,
+}
+
+# Regioni delle risorse in casa (barra in alto a destra nel villaggio),
+# usate per capire quale risorsa scarseggia di più prima di iniziare a
+# farmare. Calibrate dal vivo (screenshot 1920x1080 su BlueStacks).
+HOME_REGION_GOLD = {
+    "left": 1595,
+    "top": 42,
+    "width": 220,
+    "height": 34,
+}
+HOME_REGION_ELIXIR = {
+    "left": 1595,
+    "top": 145,
+    "width": 220,
+    "height": 34,
+}
+HOME_REGION_DARK_ELIXIR = {
+    "left": 1655,
+    "top": 243,
+    "width": 170,
+    "height": 34,
 }
 
 # Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
@@ -231,10 +267,18 @@ CONFIRM_END_BATTLE_BUTTON = (1150, 670)
 
 # Parametri di farming regolabili dalla dashboard web (sezione Impostazioni):
 # letti da config.json accanto allo script, con questi valori come default
-# se il file non c'e' o e' incompleto.
+# se il file non c'e' o e' incompleto. Le soglie "threshold_*" sono il
+# bottino minimo del bersaglio per attaccare (una per risorsa, usata solo
+# quella della risorsa prioritaria della sessione); le "home_low_*" sono
+# la soglia sotto la quale una risorsa in casa e' considerata scarsa.
 CONFIG_FILE = "config.json"
 _CONFIG_DEFAULTS = {
-    "threshold": 800000,
+    "threshold_gold": 800000,
+    "threshold_elixir": 800000,
+    "threshold_dark_elixir": 3000,
+    "home_low_gold": 300000,
+    "home_low_elixir": 300000,
+    "home_low_dark_elixir": 1500,
     "max_triggers": 20,
     "session_duration_minutes": 50,
 }
@@ -253,7 +297,6 @@ def load_config():
 
 _config = load_config()
 
-THRESHOLD = _config["threshold"]              # elisir minimo saccheggiabile per attaccare
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
 CLICK_INTERVAL = 0.15
 BATTLE_START_MAX_WAIT = 2.0   # attesa fissa dopo aver accettato un bersaglio sopra soglia
@@ -263,10 +306,22 @@ SESSION_DURATION = _config["session_duration_minutes"] * 60
 MAX_TRIGGERS = _config["max_triggers"]         # numero di attacchi dopo cui il bot si ferma da solo
 trigger_count = 0
 
+# Risorsa su cui la sessione e' concentrata (decisa da determine_priority_resource()
+# in main(), prima del loop di attacco: quella piu' scarsa in casa rispetto
+# alle soglie home_low_*, o "elixir" di default se nessuna scarseggia).
+priority_resource = "elixir"
+
+# Bottino stimato accumulato nella sessione (somma del bottino "disponibile"
+# visto in fase di scouting sui bersagli attaccati, non il bottino
+# realmente incassato a fine battaglia: il gioco non lo espone via OCR
+# semplice, quindi va trattato come stima, non come dato esatto).
+session_totals = {"gold": 0, "elixir": 0, "dark_elixir": 0}
+
 # Stato esposto alla dashboard web (letto da fuori via SSH, non dal bot
-# stesso): ultima soglia elisir letta e orario di partenza sessione.
+# stesso): ultime risorse lette e orario di partenza sessione.
 STATUS_FILE = "status.json"
-last_loot = None
+HISTORY_FILE = "history.json"
+last_resources = {"gold": None, "elixir": None, "dark_elixir": None}
 session_start_time = None
 
 
@@ -279,11 +334,38 @@ def write_status(running):
                 "version": VERSION,
                 "session_start_time": session_start_time,
                 "trigger_count": trigger_count,
-                "last_loot": last_loot,
+                "priority_resource": priority_resource,
+                "last_resources": last_resources,
                 "updated_at": time.time(),
             }, f)
     except Exception as e:
         print(f"[STATUS] Errore scrittura {STATUS_FILE}: {e}")
+
+
+def append_history_entry():
+    """Aggiunge un riepilogo della sessione appena conclusa a history.json,
+    letto dalla dashboard per lo storico. Tiene solo le ultime 50 sessioni.
+    """
+    entry = {
+        "start": session_start_time,
+        "end": time.time(),
+        "duration_minutes": round((time.time() - session_start_time) / 60, 1),
+        "trigger_count": trigger_count,
+        "priority_resource": priority_resource,
+        "totals": session_totals,
+        "version": VERSION,
+    }
+    try:
+        history = []
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE) as f:
+                history = json.load(f)
+        history.append(entry)
+        history = history[-50:]
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f)
+    except Exception as e:
+        print(f"[HISTORY] Errore scrittura {HISTORY_FILE}: {e}")
 
 
 # ==========================
@@ -322,16 +404,18 @@ def is_home_screen():
     return _home_pixel_says_home()
 
 
-def read_available_loot():
-    """Legge il valore di 'Bottino disponibile' (elisir) nella schermata di
-    scouting. Il testo del gioco e' bianco con bordo nero su uno sfondo
-    fotografico molto rumoroso: invece di un semplice threshold in scala di
-    grigi, isoliamo i pixel bianchi in HSV (bassa saturazione, alta
-    luminosita'), che si e' rivelato molto piu' affidabile nei test dal vivo.
+def _ocr_region_to_int(frame, region, debug_name):
+    """Legge un numero da una regione dello schermo (bottino/risorse). Il
+    testo del gioco e' bianco con bordo nero su uno sfondo fotografico
+    molto rumoroso: invece di un semplice threshold in scala di grigi,
+    isoliamo i pixel bianchi in HSV (bassa saturazione, alta luminosita'),
+    che si e' rivelato molto piu' affidabile nei test dal vivo.
+
+    `debug_name` determina il file debug_<nome>.png scritto ad ogni
+    lettura, utile per calibrare/verificare la regione dal vivo.
     """
-    frame = adb_screenshot()
-    l, t = OCR_REGION["left"], OCR_REGION["top"]
-    w, h = OCR_REGION["width"], OCR_REGION["height"]
+    l, t = region["left"], region["top"]
+    w, h = region["width"], region["height"]
     crop = frame[t:t + h, l:l + w]
 
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
@@ -341,9 +425,16 @@ def read_available_loot():
     mask = cv2.resize(mask, None, fx=5.0, fy=5.0, interpolation=cv2.INTER_CUBIC)
     mask = cv2.copyMakeBorder(mask, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=0)
 
-    cv2.imwrite("debug.png", mask)
+    cv2.imwrite(f"debug_{debug_name}.png", mask)
 
-    ocr_config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789"
+    # psm 7 (singola riga) falliva silenziosamente (zero blocchi di testo
+    # trovati) sui numeri con separatore delle migliaia " " quando la parte
+    # bianca del testo supera circa il 30% dell'area della regione (es.
+    # "26 000 000" in casa), pur funzionando su numeri piu' corti come
+    # "321 946": scoperto testando dal vivo le nuove regioni di oro/dark
+    # elisir. psm 13 (raw line, bypassa l'euristica di layout di Tesseract)
+    # legge correttamente in entrambi i casi.
+    ocr_config = "--oem 3 --psm 13 -c tessedit_char_whitelist=0123456789"
     text = pytesseract.image_to_string(mask, config=ocr_config)
 
     digits = "".join(ch for ch in text if ch.isdigit())
@@ -354,6 +445,60 @@ def read_available_loot():
         return int(digits)
     except ValueError:
         return None
+
+
+def read_available_resources():
+    """Legge oro, elisir e dark elisir 'disponibili' nella schermata di
+    scouting, da un unico screenshot (tre crop invece di tre screenshot,
+    per non rallentare il loop di scouting che ha un budget di tempo).
+    """
+    frame = adb_screenshot()
+    return {
+        "gold": _ocr_region_to_int(frame, OCR_REGION_GOLD, "gold"),
+        "elixir": _ocr_region_to_int(frame, OCR_REGION_ELIXIR, "elixir"),
+        "dark_elixir": _ocr_region_to_int(frame, OCR_REGION_DARK_ELIXIR, "dark_elixir"),
+    }
+
+
+def read_home_resources():
+    """Legge oro, elisir e dark elisir attualmente in casa (barra risorse
+    nel villaggio), usati da determine_priority_resource() per capire quale
+    risorsa scarseggia di piu' prima di iniziare a farmare.
+    """
+    frame = adb_screenshot()
+    return {
+        "gold": _ocr_region_to_int(frame, HOME_REGION_GOLD, "home_gold"),
+        "elixir": _ocr_region_to_int(frame, HOME_REGION_ELIXIR, "home_elixir"),
+        "dark_elixir": _ocr_region_to_int(frame, HOME_REGION_DARK_ELIXIR, "home_dark_elixir"),
+    }
+
+
+def determine_priority_resource():
+    """Decide su quale risorsa concentrare la sessione: quella con il
+    deficit maggiore rispetto alla propria soglia 'basso' (home_low_*). Se
+    nessuna risorsa e' sotto soglia (o l'OCR fallisce su tutte), resta
+    l'elisir di default (stesso comportamento di prima di questa funzione).
+    """
+    home = read_home_resources()
+    if all(v is None for v in home.values()):
+        # Lettura completamente vuota: capita se il villaggio non e'
+        # ancora del tutto stabile a schermo (animazioni, popup del primo
+        # accesso del giorno) nonostante is_home_screen() dica gia' di si'.
+        # Un solo ritentativo dopo una pausa breve, invece di arrendersi
+        # subito al fallback.
+        time.sleep(2.0)
+        home = read_home_resources()
+
+    deficits = {}
+    for resource in ("gold", "elixir", "dark_elixir"):
+        amount = home.get(resource)
+        low = _config[f"home_low_{resource}"]
+        if amount is not None and amount < low:
+            deficits[resource] = low - amount
+
+    if not deficits:
+        return "elixir", home
+    return max(deficits, key=deficits.get), home
 
 
 def scroll_down_by_drag():
@@ -404,12 +549,15 @@ SCOUT_TIME_BUDGET = 20.0
 
 
 def find_and_evaluate_opponent():
-    """Cerca un avversario e valuta il bottino disponibile: scarta i
-    bersagli sotto soglia (tasto 'Avanti') finché non ne trova uno buono,
-    esaurisce i tentativi, o rischia di far scadere il countdown. Ritorna
-    True se conviene procedere verso la battaglia.
+    """Cerca un avversario e valuta il bottino disponibile della risorsa
+    prioritaria della sessione (priority_resource): scarta i bersagli sotto
+    soglia (tasto 'Avanti') finché non ne trova uno buono, esaurisce i
+    tentativi, o rischia di far scadere il countdown. Le altre due risorse
+    vengono lette e loggate ma non influenzano la decisione. Ritorna True
+    se conviene procedere verso la battaglia.
     """
-    global last_loot
+    global last_resources
+    threshold = _config[f"threshold_{priority_resource}"]
     start = time.time()
     for attempt in range(1, MAX_SKIP_ATTEMPTS + 1):
         time.sleep(0.8)
@@ -418,13 +566,14 @@ def find_and_evaluate_opponent():
             print("[SCOUT] Siamo tornati al villaggio inaspettatamente, interrompo la ricerca.")
             return False
 
-        loot = read_available_loot()
-        print(f"[SCOUT] Tentativo {attempt}/{MAX_SKIP_ATTEMPTS} - elisir disponibile: {loot}")
-        if loot is not None:
-            last_loot = loot
+        resources = read_available_resources()
+        loot = resources.get(priority_resource)
+        print(f"[SCOUT] Tentativo {attempt}/{MAX_SKIP_ATTEMPTS} - risorsa prioritaria ({priority_resource}): {loot} - tutte: {resources}")
+        if any(v is not None for v in resources.values()):
+            last_resources = resources
 
-        if loot is not None and loot >= THRESHOLD:
-            print(f"[SCOUT] {loot} >= {THRESHOLD} -> attacco questa base")
+        if loot is not None and loot >= threshold:
+            print(f"[SCOUT] {loot} >= {threshold} -> attacco questa base")
             return True
 
         if time.time() - start > SCOUT_TIME_BUDGET:
@@ -499,6 +648,10 @@ def run_attack():
         print("[ATTACK] Scouting interrotto, salto questo ciclo.")
         return
 
+    for resource, amount in last_resources.items():
+        if amount is not None:
+            session_totals[resource] += amount
+
     if not wait_for_battle_start():
         print("[ATTACK] La battaglia non è iniziata come previsto, salto lo schieramento.")
         return
@@ -536,6 +689,12 @@ def calibrate_coordinates():
     immagini che mostri la posizione del cursore (es. Anteprima su Mac,
     oppure GIMP/Photoshop). Aggiorna poi le costanti in cima al file.
 
+    Per calibrare OCR_REGION_GOLD/OCR_REGION_DARK_ELIXIR lancialo mentre sei
+    nella schermata di scouting (bottino disponibile del bersaglio); per
+    HOME_REGION_GOLD/HOME_REGION_ELIXIR/HOME_REGION_DARK_ELIXIR lancialo
+    mentre sei nel villaggio (barra risorse in alto a sinistra). Ogni volta
+    misura solo la regione che ti serve in quel momento sullo screenshot.
+
     Per usarlo: lancia lo script con  python BOT_COMPLETO_MAC.py --calibrate
     """
     print("=== MODALITÀ CALIBRAZIONE ===")
@@ -548,16 +707,30 @@ def calibrate_coordinates():
 
 
 def main():
-    global trigger_count, session_start_time
+    global trigger_count, session_start_time, priority_resource
 
     print(f"=== OCR BOT (ADB / BlueStacks) - v{VERSION} ===")
-    print("debug.png viene aggiornato ad ogni lettura OCR del bottino")
+    print("debug_<risorsa>.png viene aggiornato ad ogni lettura OCR")
     print("Ctrl + C per interrompere.\n")
+
+    # Appena il gioco viene lanciato (run_bot.bat) il villaggio puo' metterci
+    # ancora qualche secondo a stabilizzarsi (animazioni, popup del primo
+    # accesso del giorno): aspettiamo che sia davvero pronto prima di
+    # leggere le risorse, invece di fidarci ciecamente del tempo fisso gia'
+    # atteso dal .bat.
+    print("[HOME] Attendo che il villaggio sia pronto...")
+    for _ in range(15):
+        if is_home_screen():
+            break
+        time.sleep(1.0)
+
+    priority_resource, home = determine_priority_resource()
+    print(f"[HOME] Risorse in casa: {home} -> risorsa prioritaria della sessione: {priority_resource}")
 
     start_time = time.time()
     session_start_time = start_time
     write_status(running=True)
-    send_telegram(f"▶️ Bot avviato (v{VERSION}). Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
+    send_telegram(f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
 
     while True:
         now = time.time()
@@ -567,6 +740,7 @@ def main():
             print(f"\n[STOP] {msg}")
             send_telegram(f"⏱ {msg} Attacchi totali: {trigger_count}")
             write_status(running=False)
+            append_history_entry()
             break
 
         trigger_count += 1
@@ -588,6 +762,7 @@ def main():
             print(f"[STOP] {msg}")
             send_telegram(msg)
             write_status(running=False)
+            append_history_entry()
             break
 
 
