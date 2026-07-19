@@ -250,33 +250,52 @@ HOME_REGION_DARK_ELIXIR = {
 # Posizioni calibrate dal vivo su screenshot ADB reale (non solo assunte).
 TROOP_BAR_Y = 975
 TROOP_SLOTS = [
-    (197, 10),   # drago elettrico x10
-    (340, 1),    # macchina d'assedio (mongolfiera d'assedio), un solo mezzo
+    (197, 17),   # drago elettrico x10 - piu' tap che draghi (17, tutti i
+                 # DEPLOY_POINTS disponibili): nei test dal vivo con 10 tap
+                 # ne mancavano 4, con 14 ne mancavano 2 - alcuni tap non
+                 # arrivano mai a segno (non e' la zona rossa), quindi se ne
+                 # mandano di piu' del necessario. I tap in eccesso oltre
+                 # alle truppe realmente disponibili non fanno nulla.
+    (340, 6),    # macchina d'assedio (mongolfiera d'assedio): un solo mezzo,
+                 # ma 6 tap su punti diversi. Le macchine d'assedio hanno
+                 # regole di piazzamento piu' rigide dei draghi (visto dal
+                 # vivo: "non puoi piazzare nella zona rossa" su punti dove
+                 # i draghi non hanno problemi), quindi le servono piu'
+                 # tentativi sparsi per trovarne uno valido.
 ]
 HERO_SLOTS = [483, 626, 785, 928]
 
 # Zona di schieramento: tutte le truppe vengono piazzate qui, in un unico
-# passaggio (lato destro/basso della base). Spostata piu' lontana dal bordo
-# base rispetto alla versione originale (+80 orizzontale, +60 verticale):
-# nei test dal vivo capitava che alcuni di questi punti cadessero nella
-# "zona rossa" (non valida, troppo vicina a mura/edifici) su basi con un
-# layout diverso da quella su cui era stata calibrata la zona originale,
-# facendo schierare solo parte delle truppe. Aggiustamento fatto "al buio"
-# (senza rilettura dal vivo del colore verde/rosso): da verificare/ritarare
-# se continua a capitare.
+# passaggio. Questi punti non sono generici: sono calibrati apposta sul
+# bordo PIU' ESTERNO del campo di battaglia (il confine della mappa, non
+# il perimetro della base), cosi' la zona rossa - che dipende dalle mura
+# ed edifici di ogni singola base - non li tocca mai, qualunque sia la
+# base incontrata (quella testata con successo: 93% danno, 2 stelle).
+# Un tentativo di spostarli "al buio" piu' lontano dal bordo per un
+# problema di zona rossa segnalato su una base specifica si e' rivelato
+# un errore: alcuni punti finivano fuori dall'area valida. Tornati alle
+# coordinate originali.
 DEPLOY_POINTS = [
-    (1380, 610), (1430, 560), (1480, 510), (1530, 460), (1580, 410), (1630, 360),
-    (1480, 660), (1430, 710), (1380, 760), (1330, 780), (1280, 800),
-    (1230, 820), (1180, 840), (1130, 860), (1080, 880),
+    (1300, 550), (1350, 500), (1400, 450), (1450, 400), (1500, 350), (1550, 300),
+    (1600, 250), (1650, 200),  # continuano la stessa diagonale verso l'alto
+    (1400, 600), (1350, 650), (1300, 700), (1250, 720), (1200, 740),
+    (1150, 760), (1100, 780), (1050, 800), (1000, 820),
 ]
-HERO_DEPLOY_POINT = (1430, 610)
+# Gli eroi usavano un unico punto fisso (1350, 550): su alcune basi quel
+# punto e' troppo vicino alle mura (non e' sul bordo esterno come i
+# DEPLOY_POINTS sopra) e nessun eroe veniva schierato - scoperto dal vivo
+# controllando manualmente dove cadeva il tap. Ora pescano dagli stessi
+# DEPLOY_POINTS che funzionano in modo affidabile per le truppe.
 
-# Variazione casuale (in pixel) sui punti di schieramento, per non tappare
-# sempre il pixel esatto identico ad ogni attacco (piu' umano, meno pattern
-# riconoscibile). Randomizzazione "leggera" per la v1.7: qualcosa di piu'
-# spinto (pause di esitazione, sessioni piu' irregolari) e' pianificato
-# per la v1.8.
-DEPLOY_JITTER_PX = 8
+# Niente scarto di posizione casuale sui punti di schieramento: sono
+# calibrati esattamente sul bordo esterno della mappa (vedi sopra), quindi
+# qualunque jitter, anche piccolo, rischia di spingere il tap oltre quel
+# bordo nel vuoto non giocabile - provato dal vivo sia con 14px che con
+# 5px, in entrambi i casi alcune truppe non venivano schierate. La
+# randomizzazione "leggera" della v1.7 resta sull'ordine di schieramento
+# (mescolato) e sui tempi tra un tap e l'altro (variabili), non sulla
+# posizione. Randomizzazione piu' spinta pianificata per la v1.8.
+DEPLOY_JITTER_PX = 0
 
 # Scroll verso il basso appena inizia la battaglia, prima di schierare:
 # porta la vista nella posizione giusta per raggiungere la zona di
@@ -554,18 +573,33 @@ def deploy_army():
     for slot_x, taps in TROOP_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
         time.sleep(random.uniform(0.12, 0.20))
-        deploy_points = list(DEPLOY_POINTS[:taps])
+        # Mescola PRIMA di tagliare a `taps` elementi, non dopo: altrimenti
+        # con taps < len(DEPLOY_POINTS) si provano sempre e solo gli stessi
+        # primi punti della lista (mai variati) - bug trovato dal vivo con
+        # la macchina d'assedio, che aveva sempre gli stessi 3 punti e,
+        # essendo piu' esigente dei draghi su dove puo' atterrare, falliva
+        # sempre allo stesso modo. Ora pesca da tutta la lista.
+        deploy_points = list(DEPLOY_POINTS)
         random.shuffle(deploy_points)
+        deploy_points = deploy_points[:taps]
         for (dx, dy) in deploy_points:
             adb_tap_jittered(dx, dy)
             time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
 
     print("[DEPLOY] Schiero gli eroi...")
+    hero_points = list(DEPLOY_POINTS)
+    random.shuffle(hero_points)
+    point_idx = 0
     for slot_x in HERO_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
         time.sleep(random.uniform(0.12, 0.20))
-        adb_tap_jittered(*HERO_DEPLOY_POINT)
-        time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
+        # 2 tap su punti diversi invece di uno solo: se il primo non va a
+        # segno (stesso problema visto con le truppe), il secondo copre.
+        for _ in range(2):
+            dx, dy = hero_points[point_idx % len(hero_points)]
+            point_idx += 1
+            adb_tap_jittered(dx, dy)
+            time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
 
     time.sleep(random.uniform(1.6, 2.4))
 
