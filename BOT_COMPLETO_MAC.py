@@ -10,6 +10,17 @@ import cv2
 import pytesseract
 import requests   # per Telegram
 
+# La console di Windows lanciata da Task Scheduler puo' usare una code page
+# che non sa stampare le emoji usate nei messaggi di stato (es. "✅"): senza
+# questo, un print con un'emoji manda un'eccezione non gestita che finiva
+# dritta nel blocco finally piu' in basso, bloccando il processo per sempre
+# in attesa di un INVIO che in un avvio automatico non arriva mai. Scoperto
+# durante un test dal vivo della v1.6 (il bot restava "appeso" a fine
+# sessione invece di fermarsi).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
 VERSION = "1.6"
 
@@ -469,6 +480,15 @@ def determine_priority_resource():
     l'elisir di default (stesso comportamento di prima di questa funzione).
     """
     home = read_home_resources()
+    if all(v is None for v in home.values()):
+        # Lettura completamente vuota: capita se il villaggio non e'
+        # ancora del tutto stabile a schermo (animazioni, popup del primo
+        # accesso del giorno) nonostante is_home_screen() dica gia' di si'.
+        # Un solo ritentativo dopo una pausa breve, invece di arrendersi
+        # subito al fallback.
+        time.sleep(2.0)
+        home = read_home_resources()
+
     deficits = {}
     for resource in ("gold", "elixir", "dark_elixir"):
         amount = home.get(resource)
@@ -693,6 +713,17 @@ def main():
     print("debug_<risorsa>.png viene aggiornato ad ogni lettura OCR")
     print("Ctrl + C per interrompere.\n")
 
+    # Appena il gioco viene lanciato (run_bot.bat) il villaggio puo' metterci
+    # ancora qualche secondo a stabilizzarsi (animazioni, popup del primo
+    # accesso del giorno): aspettiamo che sia davvero pronto prima di
+    # leggere le risorse, invece di fidarci ciecamente del tempo fisso gia'
+    # atteso dal .bat.
+    print("[HOME] Attendo che il villaggio sia pronto...")
+    for _ in range(15):
+        if is_home_screen():
+            break
+        time.sleep(1.0)
+
     priority_resource, home = determine_priority_resource()
     print(f"[HOME] Risorse in casa: {home} -> risorsa prioritaria della sessione: {priority_resource}")
 
@@ -749,9 +780,13 @@ if __name__ == "__main__":
         send_telegram("⛔ Bot interrotto manualmente dall'utente.")
         write_status(running=False)
     finally:
-        # In esecuzione interattiva (terminale) aspetta un INVIO prima di
-        # chiudere la finestra. In background (nohup/launchd, stdin non
-        # collegato a un terminale) salta l'attesa: altrimenti il processo
-        # resterebbe bloccato per sempre in attesa di input che non arriva.
-        if sys.stdin.isatty():
+        # sys.stdin.isatty() sembrava un modo per distinguere un avvio
+        # interattivo da uno in background, ma la finestra di console aperta
+        # da Task Scheduler (run_bot.bat, sia da Telegram che dalla
+        # dashboard) e' anch'essa una console vera: isatty() risultava True
+        # anche li', quindi il bot restava bloccato per sempre in attesa di
+        # un INVIO che nessuno avrebbe mai premuto (scoperto perche' un
+        # avvio di test non si fermava mai da solo). L'attesa ora e'
+        # esplicita, solo per chi lancia lo script a mano con questo flag.
+        if "--pause-on-exit" in sys.argv:
             input("Script terminato. Premi INVIO per chiudere la finestra...")

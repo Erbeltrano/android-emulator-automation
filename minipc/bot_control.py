@@ -13,7 +13,7 @@ import subprocess
 import time
 
 WINDOWS_MAC = "A8:5E:45:B5:BF:F5"
-WINDOWS_IP = "WINDOWS_PC_IP_OLD"
+WINDOWS_IP = "WINDOWS_PC_IP"  # riservato via app Fastweb il 2026-07-19 (era .89)
 WINDOWS_BROADCAST = "LAN_BROADCAST_IP"
 SSH_USER = "simon"
 SSH_KEY = os.path.expanduser("~/.ssh/coc_bot_win")
