@@ -494,6 +494,19 @@ def _ocr_region_to_int(frame, region, debug_name):
     if not digits:
         return None
 
+    # Trovato dal vivo: Tesseract a volte "duplica" una cifra che non
+    # esiste davvero nell'immagine (es. legge 6400500 dove lo schermo
+    # mostra 640500), facendo scattare attacchi su basi in realta' sotto
+    # soglia. Ogni cifra nella maschera e' una macchia bianca separata
+    # (i caratteri del gioco non si toccano mai): se il numero di macchie
+    # non corrisponde al numero di cifre lette, la lettura non e'
+    # affidabile e viene scartata invece di rischiare un numero gonfiato.
+    num_blobs, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    real_blobs = sum(1 for i in range(1, num_blobs) if stats[i, cv2.CC_STAT_AREA] > 50)
+    if real_blobs != len(digits):
+        print(f"[OCR] Lettura '{digits}' scartata: {len(digits)} cifre lette ma {real_blobs} macchie nell'immagine ({debug_name}).")
+        return None
+
     try:
         return int(digits)
     except ValueError:
