@@ -22,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.6"
+VERSION = "1.8"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -164,6 +164,17 @@ def adb_tap(x, y):
     adb("shell", "input", "tap", str(x), str(y), device=DEVICE)
 
 
+def adb_tap_jittered(x, y, jitter=None):
+    """Come adb_tap, ma con un piccolo scarto casuale di posizione (DEPLOY_JITTER_PX
+    di default): usato per lo schieramento, per non tappare sempre il pixel
+    esatto identico ad ogni attacco. Non usarlo sui pulsanti dell'interfaccia
+    (troppo piccoli, un tap fuori bersaglio li mancherebbe).
+    """
+    if jitter is None:
+        jitter = DEPLOY_JITTER_PX
+    adb_tap(x + random.randint(-jitter, jitter), y + random.randint(-jitter, jitter))
+
+
 def adb_swipe(x1, y1, x2, y2, duration_ms=600):
     adb(
         "shell", "input", "swipe",
@@ -232,23 +243,59 @@ HOME_REGION_DARK_ELIXIR = {
 }
 
 # Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
-# I primi TROOP_SLOTS sono le truppe (drago, barile, macchina d'assedio, ...),
-# gli HERO_SLOTS gli eroi (regina, re, gran sorvegliante, campionessa).
-# Adatta il numero/ordine se il tuo esercito e' diverso.
+# TROOP_SLOTS sono le truppe, HERO_SLOTS gli eroi (regina, re, gran
+# sorvegliante, campionessa). Esercito: 10 draghi elettrici + 1 macchina
+# d'assedio (mongolfiera d'assedio) - ogni slot ha il proprio numero di tap
+# (10 per il drago, 1 per la macchina d'assedio, che e' un solo mezzo).
+# Posizioni calibrate dal vivo su screenshot ADB reale (non solo assunte).
 TROOP_BAR_Y = 975
-TROOP_SLOTS = [215, 340, 515]
-HERO_SLOTS = [655, 785, 915, 1045]
+TROOP_SLOTS = [
+    (197, 17),   # drago elettrico x10 - piu' tap che draghi (17, tutti i
+                 # DEPLOY_POINTS disponibili): nei test dal vivo con 10 tap
+                 # ne mancavano 4, con 14 ne mancavano 2 - alcuni tap non
+                 # arrivano mai a segno (non e' la zona rossa), quindi se ne
+                 # mandano di piu' del necessario. I tap in eccesso oltre
+                 # alle truppe realmente disponibili non fanno nulla.
+    (340, 6),    # macchina d'assedio (mongolfiera d'assedio): un solo mezzo,
+                 # ma 6 tap su punti diversi. Le macchine d'assedio hanno
+                 # regole di piazzamento piu' rigide dei draghi (visto dal
+                 # vivo: "non puoi piazzare nella zona rossa" su punti dove
+                 # i draghi non hanno problemi), quindi le servono piu'
+                 # tentativi sparsi per trovarne uno valido.
+]
+HERO_SLOTS = [483, 626, 785, 928]
 
 # Zona di schieramento: tutte le truppe vengono piazzate qui, in un unico
-# passaggio (lato destro/basso della base, quello testato con successo:
-# 93% danno, 2 stelle). Non spostare truppe in zone diverse ad ogni run.
+# passaggio. Questi punti non sono generici: sono calibrati apposta sul
+# bordo PIU' ESTERNO del campo di battaglia (il confine della mappa, non
+# il perimetro della base), cosi' la zona rossa - che dipende dalle mura
+# ed edifici di ogni singola base - non li tocca mai, qualunque sia la
+# base incontrata (quella testata con successo: 93% danno, 2 stelle).
+# Un tentativo di spostarli "al buio" piu' lontano dal bordo per un
+# problema di zona rossa segnalato su una base specifica si e' rivelato
+# un errore: alcuni punti finivano fuori dall'area valida. Tornati alle
+# coordinate originali.
 DEPLOY_POINTS = [
     (1300, 550), (1350, 500), (1400, 450), (1450, 400), (1500, 350), (1550, 300),
+    (1600, 250), (1650, 200),  # continuano la stessa diagonale verso l'alto
     (1400, 600), (1350, 650), (1300, 700), (1250, 720), (1200, 740),
     (1150, 760), (1100, 780), (1050, 800), (1000, 820),
 ]
-TAPS_PER_TROOP = 10  # oltre alle truppe disponibili i tap in eccesso non fanno nulla
-HERO_DEPLOY_POINT = (1350, 550)
+# Gli eroi usavano un unico punto fisso (1350, 550): su alcune basi quel
+# punto e' troppo vicino alle mura (non e' sul bordo esterno come i
+# DEPLOY_POINTS sopra) e nessun eroe veniva schierato - scoperto dal vivo
+# controllando manualmente dove cadeva il tap. Ora pescano dagli stessi
+# DEPLOY_POINTS che funzionano in modo affidabile per le truppe.
+
+# Niente scarto di posizione casuale sui punti di schieramento: sono
+# calibrati esattamente sul bordo esterno della mappa (vedi sopra), quindi
+# qualunque jitter, anche piccolo, rischia di spingere il tap oltre quel
+# bordo nel vuoto non giocabile - provato dal vivo sia con 14px che con
+# 5px, in entrambi i casi alcune truppe non venivano schierate. La
+# randomizzazione "leggera" della v1.7 resta sull'ordine di schieramento
+# (mescolato) e sui tempi tra un tap e l'altro (variabili), non sulla
+# posizione. Randomizzazione piu' spinta pianificata per la v1.8.
+DEPLOY_JITTER_PX = 0
 
 # Scroll verso il basso appena inizia la battaglia, prima di schierare:
 # porta la vista nella posizione giusta per raggiungere la zona di
@@ -270,9 +317,15 @@ CONFIRM_END_BATTLE_BUTTON = (1150, 670)
 # se il file non c'e' o e' incompleto. Le soglie "threshold_*" sono il
 # bottino minimo del bersaglio per attaccare (una per risorsa, usata solo
 # quella della risorsa prioritaria della sessione); le "home_low_*" sono
-# la soglia sotto la quale una risorsa in casa e' considerata scarsa.
+# la soglia sotto la quale una risorsa in casa e' considerata scarsa (usate
+# solo se priority_mode e' "auto"). "priority_mode" sceglie come decidere
+# la risorsa prioritaria: "auto" (rileva da solo cosa scarseggia in casa,
+# comportamento della v1.6) oppure forzata a "gold"/"elixir"/"dark_elixir"
+# per saltare il rilevamento e attaccare sempre in base a quella, con la
+# sua threshold_* configurata.
 CONFIG_FILE = "config.json"
 _CONFIG_DEFAULTS = {
+    "priority_mode": "auto",
     "threshold_gold": 800000,
     "threshold_elixir": 800000,
     "threshold_dark_elixir": 3000,
@@ -298,9 +351,11 @@ def load_config():
 _config = load_config()
 
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
-CLICK_INTERVAL = 0.15
+CLICK_INTERVAL_RANGE = (0.10, 0.22)  # intervallo casuale tra un tap e l'altro, invece di uno fisso
 BATTLE_START_MAX_WAIT = 2.0   # attesa fissa dopo aver accettato un bersaglio sopra soglia
-BATTLE_DURATION_WAIT = (60.0, 90.0)  # attesa (min, max) prima di terminare la battaglia da soli
+BATTLE_DURATION_WAIT = (45.0, 120.0)  # attesa (min, max) prima di terminare la battaglia da soli
+                                       # (range allargato in v1.8, la battaglia dura al massimo
+                                       # 3 minuti quindi c'e' margine per piu' variazione)
 
 SESSION_DURATION = _config["session_duration_minutes"] * 60
 MAX_TRIGGERS = _config["max_triggers"]         # numero di attacchi dopo cui il bot si ferma da solo
@@ -308,8 +363,8 @@ trigger_count = 0
 
 # Risorsa su cui la sessione e' concentrata (decisa da determine_priority_resource()
 # in main(), prima del loop di attacco: quella piu' scarsa in casa rispetto
-# alle soglie home_low_*, o "elixir" di default se nessuna scarseggia).
-priority_resource = "elixir"
+# alle soglie home_low_*, o "gold" di default se nessuna scarseggia).
+priority_resource = "gold"
 
 # Bottino stimato accumulato nella sessione (somma del bottino "disponibile"
 # visto in fase di scouting sui bersagli attaccati, non il bottino
@@ -336,13 +391,24 @@ def write_status(running):
                 "trigger_count": trigger_count,
                 "priority_resource": priority_resource,
                 "last_resources": last_resources,
+                "session_totals": session_totals,
                 "updated_at": time.time(),
             }, f)
     except Exception as e:
         print(f"[STATUS] Errore scrittura {STATUS_FILE}: {e}")
 
 
-def append_history_entry():
+def format_totals_summary():
+    """Riga di riepilogo del bottino stimato della sessione, per i
+    messaggi Telegram di fine sessione."""
+    t = session_totals
+    return (
+        f"Bottino stimato: 🥇{t['gold']:,} 🧪{t['elixir']:,} 🔮{t['dark_elixir']:,}"
+        .replace(",", ".")
+    )
+
+
+def append_history_entry(end_reason="completata"):
     """Aggiunge un riepilogo della sessione appena conclusa a history.json,
     letto dalla dashboard per lo storico. Tiene solo le ultime 50 sessioni.
     """
@@ -354,6 +420,7 @@ def append_history_entry():
         "priority_resource": priority_resource,
         "totals": session_totals,
         "version": VERSION,
+        "end_reason": end_reason,
     }
     try:
         history = []
@@ -435,9 +502,36 @@ def _ocr_region_to_int(frame, region, debug_name):
     # elisir. psm 13 (raw line, bypassa l'euristica di layout di Tesseract)
     # legge correttamente in entrambi i casi.
     ocr_config = "--oem 3 --psm 13 -c tessedit_char_whitelist=0123456789"
-    text = pytesseract.image_to_string(mask, config=ocr_config)
 
-    digits = "".join(ch for ch in text if ch.isdigit())
+    # Trovato dal vivo: Tesseract a volte "duplica" una cifra che non esiste
+    # davvero nell'immagine (es. legge 6400500 dove lo schermo mostra
+    # 640500), facendo scattare attacchi su basi in realta' sotto soglia.
+    # Un primo tentativo di validazione contava le macchie bianche in TUTTA
+    # l'immagine e le confrontava col numero di cifre lette: durante lo
+    # scouting pero' il testo del bottino e' sovrapposto al rendering 3D dal
+    # vivo del villaggio nemico (non un pannello UI solido), che spesso crea
+    # macchie bianche di dimensioni paragonabili alle cifre ma estranee al
+    # numero, facendo scartare quasi ogni lettura valida. Ora si valida ogni
+    # cifra singolarmente: si controlla che dentro il riquadro che Tesseract
+    # stesso assegna a quella cifra ci sia davvero inchiostro. Il rumore di
+    # sfondo fuori da quei riquadri non influisce piu' sul risultato.
+    boxes_raw = pytesseract.image_to_boxes(mask, config=ocr_config)
+    h, w = mask.shape
+    digits = ""
+    for line in boxes_raw.strip().splitlines():
+        parts = line.split()
+        if len(parts) < 5 or not parts[0].isdigit():
+            continue
+        left, bottom, right, top = (int(p) for p in parts[1:5])
+        y0, y1 = max(0, h - top), min(h, h - bottom)
+        x0, x1 = max(0, left), min(w, right)
+        roi = mask[y0:y1, x0:x1]
+        ink_ratio = (roi > 127).mean() if roi.size else 0.0
+        if ink_ratio < 0.12:
+            print(f"[OCR] Lettura scartata: cifra '{parts[0]}' con solo {ink_ratio:.0%} di inchiostro nel suo riquadro, probabile lettura fantasma ({debug_name}).")
+            return None
+        digits += parts[0]
+
     if not digits:
         return None
 
@@ -476,8 +570,10 @@ def read_home_resources():
 def determine_priority_resource():
     """Decide su quale risorsa concentrare la sessione: quella con il
     deficit maggiore rispetto alla propria soglia 'basso' (home_low_*). Se
-    nessuna risorsa e' sotto soglia (o l'OCR fallisce su tutte), resta
-    l'elisir di default (stesso comportamento di prima di questa funzione).
+    nessuna risorsa e' sotto soglia (o l'OCR fallisce su tutte), il
+    default e' l'oro (non l'elisir): scelta esplicita dell'utente, visto
+    che in pratica oro/elisir restano quasi sempre ben sopra soglia su un
+    account sviluppato e la scelta di default capita spesso.
     """
     home = read_home_resources()
     if all(v is None for v in home.values()):
@@ -497,7 +593,7 @@ def determine_priority_resource():
             deficits[resource] = low - amount
 
     if not deficits:
-        return "elixir", home
+        return "gold", home
     return max(deficits, key=deficits.get), home
 
 
@@ -514,30 +610,52 @@ def deploy_army():
     """Scrolla nella posizione giusta, poi schiera TUTTE le truppe e gli
     eroi in un unico passaggio, sempre nella stessa zona (lato destro/basso
     della base) invece di sperimentare posizioni diverse ad ogni attacco.
+
+    I tap di schieramento hanno un piccolo scarto casuale di posizione e
+    ordine (DEPLOY_JITTER_PX, ordine mescolato) e i tempi tra un tap e
+    l'altro variano in un range invece di essere fissi: randomizzazione
+    "leggera" per rendere il pattern meno riconoscibile (v1.7).
     """
     scroll_down_by_drag()
 
     print("[DEPLOY] Schiero le truppe...")
-    for slot_x in TROOP_SLOTS:
+    for slot_x, taps in TROOP_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(0.15)
-        for (dx, dy) in DEPLOY_POINTS[:TAPS_PER_TROOP]:
-            adb_tap(dx, dy)
-            time.sleep(CLICK_INTERVAL)
+        time.sleep(random.uniform(0.12, 0.20))
+        # Mescola PRIMA di tagliare a `taps` elementi, non dopo: altrimenti
+        # con taps < len(DEPLOY_POINTS) si provano sempre e solo gli stessi
+        # primi punti della lista (mai variati) - bug trovato dal vivo con
+        # la macchina d'assedio, che aveva sempre gli stessi 3 punti e,
+        # essendo piu' esigente dei draghi su dove puo' atterrare, falliva
+        # sempre allo stesso modo. Ora pesca da tutta la lista.
+        deploy_points = list(DEPLOY_POINTS)
+        random.shuffle(deploy_points)
+        deploy_points = deploy_points[:taps]
+        for (dx, dy) in deploy_points:
+            adb_tap_jittered(dx, dy)
+            time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
 
     print("[DEPLOY] Schiero gli eroi...")
+    hero_points = list(DEPLOY_POINTS)
+    random.shuffle(hero_points)
+    point_idx = 0
     for slot_x in HERO_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(0.15)
-        adb_tap(*HERO_DEPLOY_POINT)
-        time.sleep(CLICK_INTERVAL)
+        time.sleep(random.uniform(0.12, 0.20))
+        # 2 tap su punti diversi invece di uno solo: se il primo non va a
+        # segno (stesso problema visto con le truppe), il secondo copre.
+        for _ in range(2):
+            dx, dy = hero_points[point_idx % len(hero_points)]
+            point_idx += 1
+            adb_tap_jittered(dx, dy)
+            time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
 
-    time.sleep(2.0)
+    time.sleep(random.uniform(1.6, 2.4))
 
     print("[DEPLOY] Attivo le abilità eroi...")
     for slot_x in HERO_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(0.2)
+        time.sleep(random.uniform(0.16, 0.26))
 
 
 # Il countdown di matchmaking del gioco dura ~28-30s da quando un avversario
@@ -611,6 +729,17 @@ def wait_for_battle_start(fixed_wait=BATTLE_START_MAX_WAIT):
     return True
 
 
+def maybe_hesitate(chance=0.25, pause_range=(2.0, 6.0)):
+    """Pausa di 'esitazione' casuale: non capita ad ogni attacco (solo
+    con probabilita' `chance`), per non introdurre comunque un ritardo
+    fisso e prevedibile ad ogni ciclo. Randomizzazione piu' spinta della
+    v1.8, oltre a quella "leggera" sui tap gia' presente dalla v1.7."""
+    if random.random() < chance:
+        pause = random.uniform(*pause_range)
+        print(f"[WAIT] Pausa di esitazione ({pause:.1f}s)...")
+        time.sleep(pause)
+
+
 def run_attack():
     """Un ciclo completo: cerca avversario, valuta, attacca, aspetta la
     fine della battaglia, torna al villaggio. Ogni fase verifica lo stato
@@ -618,6 +747,7 @@ def run_attack():
     torna al villaggio prima del previsto) il ciclo si interrompe subito
     invece di continuare a schierare truppe alla cieca.
     """
+    maybe_hesitate()
     # A volte un popup imprevisto sopra al villaggio (es. "Miglioramento
     # completato!", offerte, eventi) assorbe il tap su "Attacco!": la
     # sequenza di tap successivi (pensati per le schermate seguenti) allora
@@ -660,6 +790,7 @@ def run_attack():
         print("[ATTACK] Siamo al villaggio invece che in battaglia: non schiero nulla.")
         return
 
+    maybe_hesitate(chance=0.2, pause_range=(1.5, 4.0))
     deploy_army()
 
     wait_time = random.uniform(*BATTLE_DURATION_WAIT)
@@ -724,43 +855,74 @@ def main():
             break
         time.sleep(1.0)
 
-    priority_resource, home = determine_priority_resource()
-    print(f"[HOME] Risorse in casa: {home} -> risorsa prioritaria della sessione: {priority_resource}")
+    if _config["priority_mode"] in ("gold", "elixir", "dark_elixir"):
+        # Priorita' forzata dalla dashboard: salta il rilevamento
+        # automatico (e la lettura OCR delle risorse in casa, non serve).
+        priority_resource = _config["priority_mode"]
+        print(f"[HOME] Risorsa prioritaria forzata dalla dashboard: {priority_resource}")
+    else:
+        priority_resource, home = determine_priority_resource()
+        print(f"[HOME] Risorse in casa: {home} -> risorsa prioritaria della sessione: {priority_resource}")
 
     start_time = time.time()
     session_start_time = start_time
+
+    # Sessioni un po' irregolari invece di fermarsi sempre esattamente allo
+    # stesso numero di attacchi/minuti (v1.8): variano di poco ad ogni
+    # avvio, cosi' non c'e' un pattern fisso riconoscibile da fuori.
+    session_max_triggers = max(1, MAX_TRIGGERS - random.randint(0, 2))
+    session_duration = max(300.0, SESSION_DURATION - random.uniform(0, 300))
+
     write_status(running=True)
-    send_telegram(f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. Farà al massimo {MAX_TRIGGERS} attacchi o {int(SESSION_DURATION/60)} minuti.")
+    send_telegram(f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. Farà al massimo {session_max_triggers} attacchi o {int(session_duration/60)} minuti.")
+
+    # Se ADB/BlueStacks va giu' a meta' sessione (es. crash dell'emulatore),
+    # ogni attacco fallisce subito con un'eccezione: senza un limite, il
+    # ciclo riprovava ogni 5s fino a SESSION_DURATION, mandando un messaggio
+    # Telegram di errore ad ogni tentativo (decine in pochi minuti). Scoperto
+    # dal vivo durante un test. Dopo N errori di fila ci si ferma con un
+    # solo avviso, invece di continuare a martellare alla cieca.
+    MAX_CONSECUTIVE_ERRORS = 3
+    consecutive_errors = 0
 
     while True:
         now = time.time()
 
-        if now - start_time > SESSION_DURATION:
-            msg = "Sono passati 50 minuti, fermo il bot per timeout."
+        if now - start_time > session_duration:
+            msg = f"Sono passati {int(session_duration/60)} minuti, fermo il bot per timeout."
             print(f"\n[STOP] {msg}")
-            send_telegram(f"⏱ {msg} Attacchi totali: {trigger_count}")
+            send_telegram(f"⏱ {msg} Attacchi totali: {trigger_count}\n{format_totals_summary()}")
             write_status(running=False)
-            append_history_entry()
+            append_history_entry(end_reason="timeout")
             break
 
         trigger_count += 1
-        print(f"\n[ATTACCO {trigger_count}/{MAX_TRIGGERS}]")
+        print(f"\n[ATTACCO {trigger_count}/{session_max_triggers}]")
 
         try:
             run_attack()
         except Exception as e:
+            consecutive_errors += 1
             print(f"[ERRORE] {e}")
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                msg = f"Troppi errori di fila ({consecutive_errors}), mi fermo invece di continuare a riprovare alla cieca."
+                print(f"[STOP] {msg}")
+                send_telegram(f"🛑 {msg} Ultimo errore: {e}\nControlla che BlueStacks/ADB siano ok.")
+                write_status(running=False)
+                append_history_entry(end_reason="errori")
+                break
             send_telegram(f"⚠️ Errore durante l'attacco {trigger_count}: {e}")
             write_status(running=True)
             time.sleep(5.0)
             continue
 
+        consecutive_errors = 0
         write_status(running=True)
 
-        if trigger_count >= MAX_TRIGGERS:
-            msg = f"✅ Bot ha finito di farmare. Raggiunti {MAX_TRIGGERS} attacchi."
+        if trigger_count >= session_max_triggers:
+            msg = f"✅ Bot ha finito di farmare. Raggiunti {trigger_count} attacchi."
             print(f"[STOP] {msg}")
-            send_telegram(msg)
+            send_telegram(f"{msg}\n{format_totals_summary()}")
             write_status(running=False)
             append_history_entry()
             break
