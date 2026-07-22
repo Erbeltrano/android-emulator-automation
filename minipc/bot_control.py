@@ -17,11 +17,22 @@ WINDOWS_IP = "WINDOWS_PC_IP"  # riservato via app Fastweb il 2026-07-19 (era .89
 WINDOWS_BROADCAST = "LAN_BROADCAST_IP"
 SSH_USER = "simon"
 SSH_KEY = os.path.expanduser("~/.ssh/coc_bot_win")
+# ControlMaster/ControlPersist: la prima chiamata apre una connessione SSH
+# e la tiene aperta, le successive la riusano invece di rifare da zero
+# l'handshake TCP+SSH+autenticazione. Scoperto dal vivo che senza riuso ogni
+# singola chiamata (get_bot_status() ne fa fino a 3 di seguito) rischiava di
+# incappare in un intoppo quando il PC Windows era sotto carico per via di
+# BlueStacks/ADB, causando falsi negativi (es. il watchdog convinto che il
+# PC fosse sparito dalla rete mentre una sessione era regolarmente in corso).
+SSH_CONTROL_PATH = os.path.expanduser("~/.ssh/coc_bot_control-%r@%h:%p")
 SSH_OPTS = [
     "-i", SSH_KEY,
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ConnectTimeout=6",
     "-o", "BatchMode=yes",
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPersist=60s",
+    "-o", f"ControlPath={SSH_CONTROL_PATH}",
 ]
 
 BOT_LOG_PATH = r"C:\Users\simon\bot_log.txt"
@@ -70,22 +81,34 @@ def send_magic_packet(mac=WINDOWS_MAC, repeats=5):
     sock.close()
 
 
-def ssh_run(command, timeout=15):
+def ssh_run(command, timeout=15, retries=1):
     """Esegue un comando sul PC Windows via SSH. Ritorna (ok, stdout+stderr).
 
     Non usa text=True: l'output di cmd.exe/PowerShell in italiano puo'
     arrivare in una code page diversa da UTF-8 (es. accenti), che altrimenti
     farebbe crashare la decodifica automatica di subprocess.
+
+    Riprova `retries` volte (con una breve pausa) prima di arrendersi: la
+    connessione persistente (vedi SSH_OPTS) rende un secondo tentativo quasi
+    gratuito, e copre gli intoppi momentanei che capitavano anche con una
+    connessione sana.
     """
     full_cmd = ["ssh"] + SSH_OPTS + [f"{SSH_USER}@{WINDOWS_IP}", command]
-    try:
-        result = subprocess.run(full_cmd, capture_output=True, timeout=timeout)
-        output = (result.stdout or b"") + (result.stderr or b"")
-        return result.returncode == 0, output.decode("utf-8", errors="replace")
-    except subprocess.TimeoutExpired:
-        return False, "timeout"
-    except Exception as e:
-        return False, str(e)
+    last_output = ""
+    for attempt in range(retries + 1):
+        try:
+            result = subprocess.run(full_cmd, capture_output=True, timeout=timeout)
+            output = (result.stdout or b"") + (result.stderr or b"")
+            if result.returncode == 0:
+                return True, output.decode("utf-8", errors="replace")
+            last_output = output.decode("utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            last_output = "timeout"
+        except Exception as e:
+            last_output = str(e)
+        if attempt < retries:
+            time.sleep(1.5)
+    return False, last_output
 
 
 def windows_reachable():

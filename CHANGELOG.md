@@ -2,6 +2,11 @@
 
 Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello basta `git log`. Il numero di versione è quello in `VERSION` in cima a `BOT_COMPLETO_MAC.py`.
 
+## v1.8.1 — Fix affidabilità SSH (connessione persistente + retry)
+- **Connessione SSH persistente** (`ControlMaster`/`ControlPersist`) tra mini PC e PC Windows: prima ogni chiamata (`python_running()`, `get_bot_status()`, ecc.) apriva una nuova connessione SSH da zero, e `get_bot_status()` ne fa fino a 3 di seguito. Scoperto dal vivo monitorando una sessione reale: capitava che una singola chiamata fallisse senza motivo persistente quando il PC Windows era sotto carico (BlueStacks/ADB), con `python_running()` che risultava `False` mentre il bot era sicuramente in esecuzione (verificato incrociando col log). Le chiamate ora riusano la stessa connessione (da ~0.28s a ~0.05s per chiamata nei test) invece di rifare l'handshake ogni volta.
+- **Retry automatico** su `ssh_run()` (un secondo tentativo dopo una breve pausa) per coprire gli intoppi momentanei residui, reso economico dalla connessione persistente.
+- **Perché:** questa stessa funzione alimenta `/stato` su Telegram, i contatori in tempo reale della dashboard, e soprattutto il watchdog — un falso negativo lì rischiava di generare un falso allarme "PC sparito dalla rete" durante una sessione del tutto normale.
+
 ## v1.8 — Randomizzazione più spinta, storico più ricco, notifiche migliori, watchdog
 - **Randomizzazione più spinta** (pianificata dalla v1.7): ogni sessione ora ha un numero massimo di attacchi e una durata leggermente diversi dal valore configurato (fino a 2 attacchi in meno, fino a 5 minuti in meno), invece di fermarsi sempre esattamente allo stesso punto. Pause di "esitazione" casuali (2-6s prima di un attacco, 1.5-4s prima di schierare) che non capitano ad ogni ciclo. Range di attesa a fine battaglia allargato (45-120s invece di 60-90s).
 - **Storico sessioni più ricco**: ora registra anche le sessioni fermate manualmente da dashboard/Telegram (prima solo quelle finite da sole - fine cicli, timeout, troppi errori), con un campo "come è finita" visibile in tabella. Nuovo grafico a barre (attacchi per sessione nel tempo) sopra la tabella nella dashboard.
