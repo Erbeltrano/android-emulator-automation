@@ -22,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.8"
+VERSION = "1.8.1"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
