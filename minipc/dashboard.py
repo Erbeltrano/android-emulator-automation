@@ -95,6 +95,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"lines": bot_control.get_log_tail(40)})
         elif self.path == "/api/settings":
             self._send_json(bot_control.get_settings())
+        elif self.path == "/api/settings/defaults":
+            self._send_json(bot_control.DEFAULT_SETTINGS)
         elif self.path == "/api/history":
             self._send_json({"sessions": bot_control.get_history(20)})
         else:

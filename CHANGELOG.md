@@ -2,6 +2,12 @@
 
 Ogni voce spiega cosa è cambiato e **perché**, non solo il cosa — per quello basta `git log`. Il numero di versione è quello in `VERSION` in cima a `BOT_COMPLETO_MAC.py`.
 
+## v1.9 — Reset impostazioni di produzione + stato live durante lo scouting
+- **Pulsante "Ripristina valori di produzione"** nelle impostazioni della dashboard: rilegge i default hardcoded lato mini PC e li mostra nel form senza salvarli subito (serve poi comunque premere Salva). Aggiunto un endpoint `GET /api/settings/defaults`.
+- **Perché:** `config.json` sul PC Windows è stato trovato più volte ai valori "di test" (soglie basse, sessioni corte) invece che a quelli di produzione — probabile modifica manuale mai riportata indietro. Prima l'unico modo per rimediare era riscrivere i valori a mano uno per uno nella dashboard.
+- **Stato live durante lo scouting**: `write_status()` viene ora chiamato dopo ogni singolo tentativo di scouting (non solo a fine ciclo attacco), con un nuovo campo `phase` (`idle`/`scouting`/`battaglia`) e `scout_progress` (tentativo corrente, risorse lette, soglia). La dashboard mostra questi dati in tempo reale invece di aggiornarsi solo a fine attacco.
+- **Verificato dal vivo** (2026-07-23): reset impostazioni testato end-to-end (endpoint defaults → salvataggio → `config.json` sul PC Windows aggiornato ai valori di produzione); stato live verificato su una sessione reale multi-attacco, transizioni `idle → scouting → battaglia` corrette e `scout_progress` popolato/svuotato coerentemente ad ogni fase.
+
 ## v1.8.1 — Fix affidabilità SSH (connessione persistente + retry)
 - **Connessione SSH persistente** (`ControlMaster`/`ControlPersist`) tra mini PC e PC Windows: prima ogni chiamata (`python_running()`, `get_bot_status()`, ecc.) apriva una nuova connessione SSH da zero, e `get_bot_status()` ne fa fino a 3 di seguito. Scoperto dal vivo monitorando una sessione reale: capitava che una singola chiamata fallisse senza motivo persistente quando il PC Windows era sotto carico (BlueStacks/ADB), con `python_running()` che risultava `False` mentre il bot era sicuramente in esecuzione (verificato incrociando col log). Le chiamate ora riusano la stessa connessione (da ~0.28s a ~0.05s per chiamata nei test) invece di rifare l'handshake ogni volta.
 - **Retry automatico** su `ssh_run()` (un secondo tentativo dopo una breve pausa) per coprire gli intoppi momentanei residui, reso economico dalla connessione persistente.

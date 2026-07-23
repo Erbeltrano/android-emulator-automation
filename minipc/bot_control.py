@@ -147,6 +147,8 @@ def get_bot_status():
         "session_totals": status_data.get("session_totals"),
         "session_start_time": status_data.get("session_start_time"),
         "version": status_data.get("version"),
+        "phase": status_data.get("phase"),
+        "scout_progress": status_data.get("scout_progress"),
     }
 
 
