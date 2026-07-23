@@ -147,6 +147,15 @@
     margin-top: 10px;
     min-height: 16px;
   }
+  .live-phase {
+    font-size: 13px;
+    color: var(--text);
+    background: #01030a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 4px;
+  }
 
   .chevron { transition: transform 0.15s; color: var(--muted); }
   .chevron.open { transform: rotate(180deg); }
@@ -173,6 +182,16 @@
     color: #fff;
     margin-top: 4px;
   }
+  button.action.secondary {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    margin-top: 8px;
+    font-size: 13px;
+    padding: 10px;
+  }
+  button.action.secondary:hover { color: var(--text); border-color: var(--muted); }
   .settings-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
   .settings-subhead {
     font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
@@ -251,6 +270,7 @@
       <button class="action stop" id="btnStop">■ STOP</button>
     </div>
     <div class="action-msg" id="actionMsg"></div>
+    <div class="live-phase" id="livePhase" style="display:none;"></div>
   </div>
 
   <div class="stats-row">
@@ -336,6 +356,7 @@
         <input type="number" id="setSessionMinutes" step="5" min="5">
       </div>
       <button class="action save" id="btnSaveSettings">💾 SALVA</button>
+      <button class="action secondary" id="btnResetDefaults">↺ RIPRISTINA VALORI DI PRODUZIONE</button>
       <div class="action-msg" id="settingsMsg"></div>
       <div class="settings-note">Le impostazioni si applicano dal prossimo avvio del bot, non su una sessione già in corso.</div>
     </div>
@@ -392,24 +413,37 @@ function updatePriorityModeUI() {
 
 $('setPriorityMode').addEventListener('change', updatePriorityModeUI);
 
+function applySettingsToForm(s) {
+  $('setPriorityMode').value = s.priority_mode || 'auto';
+  $('setThresholdGold').value = s.threshold_gold;
+  $('setThresholdElixir').value = s.threshold_elixir;
+  $('setThresholdDarkElixir').value = s.threshold_dark_elixir;
+  $('setHomeLowGold').value = s.home_low_gold;
+  $('setHomeLowElixir').value = s.home_low_elixir;
+  $('setHomeLowDarkElixir').value = s.home_low_dark_elixir;
+  $('setMaxTriggers').value = s.max_triggers;
+  $('setSessionMinutes').value = s.session_duration_minutes;
+  updatePriorityModeUI();
+}
+
 async function loadSettings() {
   try {
     const res = await fetch('/api/settings');
-    const s = await res.json();
-    $('setPriorityMode').value = s.priority_mode || 'auto';
-    $('setThresholdGold').value = s.threshold_gold;
-    $('setThresholdElixir').value = s.threshold_elixir;
-    $('setThresholdDarkElixir').value = s.threshold_dark_elixir;
-    $('setHomeLowGold').value = s.home_low_gold;
-    $('setHomeLowElixir').value = s.home_low_elixir;
-    $('setHomeLowDarkElixir').value = s.home_low_dark_elixir;
-    $('setMaxTriggers').value = s.max_triggers;
-    $('setSessionMinutes').value = s.session_duration_minutes;
-    updatePriorityModeUI();
+    applySettingsToForm(await res.json());
   } catch (e) {
     $('settingsMsg').textContent = 'Errore nel caricamento delle impostazioni.';
   }
 }
+
+$('btnResetDefaults').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/settings/defaults');
+    applySettingsToForm(await res.json());
+    $('settingsMsg').textContent = 'Valori di produzione caricati nel modulo: premi Salva per confermare.';
+  } catch (e) {
+    $('settingsMsg').textContent = 'Errore nel caricamento dei valori di default.';
+  }
+});
 
 $('btnSaveSettings').addEventListener('click', async () => {
   const payload = {
@@ -512,6 +546,24 @@ async function refreshStatus() {
     $('statElixir').textContent = fmt(resources.elixir);
     $('statDarkElixir').textContent = fmt(resources.dark_elixir);
     lastStart = s.running ? s.session_start_time : null;
+
+    const liveEl = $('livePhase');
+    if (!s.running) {
+      liveEl.style.display = 'none';
+    } else if (s.phase === 'scouting' && s.scout_progress) {
+      const p = s.scout_progress;
+      const r = p.resources || {};
+      liveEl.style.display = 'block';
+      liveEl.textContent =
+        `🔍 Scouting: tentativo ${p.attempt}/${p.max_attempts} — ` +
+        `oro ${fmt(r.gold)} · elisir ${fmt(r.elixir)} · dark ${fmt(r.dark_elixir)} ` +
+        `(soglia ${fmt(p.threshold)})`;
+    } else if (s.phase === 'battaglia') {
+      liveEl.style.display = 'block';
+      liveEl.textContent = '⚔️ Battaglia in corso...';
+    } else {
+      liveEl.style.display = 'none';
+    }
   } catch (e) {}
 }
 

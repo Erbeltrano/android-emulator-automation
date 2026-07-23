@@ -22,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.8.1"
+VERSION = "1.9"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -379,6 +379,14 @@ HISTORY_FILE = "history.json"
 last_resources = {"gold": None, "elixir": None, "dark_elixir": None}
 session_start_time = None
 
+# Fase corrente della sessione, per far vedere alla dashboard cosa sta
+# succedendo *durante* un attacco (prima si aggiornava solo a fine ciclo
+# completo, quindi per 1-2 minuti a testa la dashboard restava ferma
+# sull'attacco precedente anche a bot ben vivo). "scouting" include il
+# dettaglio del tentativo corrente; None quando non c'e' scouting in corso.
+current_phase = "idle"
+scout_progress = None
+
 
 def write_status(running):
     """Scrive lo stato corrente su file, letto poi dalla dashboard web."""
@@ -392,6 +400,8 @@ def write_status(running):
                 "priority_resource": priority_resource,
                 "last_resources": last_resources,
                 "session_totals": session_totals,
+                "phase": current_phase,
+                "scout_progress": scout_progress,
                 "updated_at": time.time(),
             }, f)
     except Exception as e:
@@ -674,14 +684,16 @@ def find_and_evaluate_opponent():
     vengono lette e loggate ma non influenzano la decisione. Ritorna True
     se conviene procedere verso la battaglia.
     """
-    global last_resources
+    global last_resources, current_phase, scout_progress
     threshold = _config[f"threshold_{priority_resource}"]
+    current_phase = "scouting"
     start = time.time()
     for attempt in range(1, MAX_SKIP_ATTEMPTS + 1):
         time.sleep(0.8)
 
         if is_home_screen():
             print("[SCOUT] Siamo tornati al villaggio inaspettatamente, interrompo la ricerca.")
+            scout_progress = None
             return False
 
         resources = read_available_resources()
@@ -689,6 +701,14 @@ def find_and_evaluate_opponent():
         print(f"[SCOUT] Tentativo {attempt}/{MAX_SKIP_ATTEMPTS} - risorsa prioritaria ({priority_resource}): {loot} - tutte: {resources}")
         if any(v is not None for v in resources.values()):
             last_resources = resources
+
+        scout_progress = {
+            "attempt": attempt,
+            "max_attempts": MAX_SKIP_ATTEMPTS,
+            "resources": resources,
+            "threshold": threshold,
+        }
+        write_status(running=True)
 
         if loot is not None and loot >= threshold:
             print(f"[SCOUT] {loot} >= {threshold} -> attacco questa base")
@@ -789,6 +809,11 @@ def run_attack():
     if is_home_screen():
         print("[ATTACK] Siamo al villaggio invece che in battaglia: non schiero nulla.")
         return
+
+    global current_phase, scout_progress
+    current_phase = "battaglia"
+    scout_progress = None
+    write_status(running=True)
 
     maybe_hesitate(chance=0.2, pause_range=(1.5, 4.0))
     deploy_army()
