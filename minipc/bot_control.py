@@ -39,6 +39,12 @@ BOT_LOG_PATH = r"C:\Users\simon\bot_log.txt"
 STATUS_PATH = r"C:\Users\simon\status.json"
 CONFIG_PATH = r"C:\Users\simon\config.json"
 HISTORY_PATH = r"C:\Users\simon\history.json"
+SCREEN_REMOTE_PATH = "C:/Users/simon/screen_relay.png"  # slash, non backslash: scp
+                                                         # raddoppia i backslash nel
+                                                         # path remoto (bug noto del
+                                                         # client SFTP), il file poi
+                                                         # non si trova piu'
+ADB_PATH = r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe"  # stesso path usato da run_bot.bat
 
 DEFAULT_SETTINGS = {
     "priority_mode": "auto",
@@ -50,6 +56,7 @@ DEFAULT_SETTINGS = {
     "home_low_dark_elixir": 1500,
     "max_triggers": 20,
     "session_duration_minutes": 50,
+    "auto_wall_upgrade": False,
 }
 
 WAKE_WAIT_SECONDS = 35   # attesa dopo il magic packet prima di provare SSH
@@ -291,6 +298,41 @@ def save_settings(new_settings):
     )
     ok, out = ssh_run(cmd)
     return ok
+
+
+def capture_screen(local_path):
+    """Cattura uno screenshot dell'emulatore (via ADB, stesso comando usato
+    dal bot) sul PC Windows e lo scarica in locale su `local_path`.
+
+    Ritorna (True, None) se riuscito, (False, motivo) altrimenti. Funziona
+    anche a bot fermo, purche' BlueStacks sia ancora aperto: usa ADB
+    direttamente, non passa dal processo Python del bot.
+    """
+    if not windows_reachable():
+        return False, "PC Windows spento o non raggiungibile."
+
+    ok, out = ssh_run(
+        f'"{ADB_PATH}" exec-out screencap -p > "{SCREEN_REMOTE_PATH}"',
+        timeout=20,
+    )
+    if not ok:
+        return False, f"Screenshot ADB fallito (BlueStacks aperto?): {out.strip()}"
+
+    scp_cmd = [
+        "scp", "-i", SSH_KEY,
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=6",
+        f"{SSH_USER}@{WINDOWS_IP}:{SCREEN_REMOTE_PATH}",
+        local_path,
+    ]
+    try:
+        result = subprocess.run(scp_cmd, capture_output=True, timeout=20)
+        if result.returncode != 0:
+            return False, result.stderr.decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        return False, str(e)
+
+    return True, None
 
 
 def get_history(limit=20):

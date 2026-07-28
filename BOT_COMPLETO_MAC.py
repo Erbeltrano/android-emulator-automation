@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import random
+import re
 import shutil
 import subprocess
 import numpy as np
@@ -22,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "1.9"
+VERSION = "2.8"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -150,18 +151,58 @@ DEVICE = find_device()
 print(f"[ADB] Device connesso: {DEVICE}")
 
 
-def adb_screenshot():
-    """Cattura lo schermo dell'emulatore e ritorna un array numpy BGR (OpenCV)."""
-    result = adb("exec-out", "screencap", "-p", device=DEVICE)
-    img_array = np.frombuffer(result.stdout, dtype=np.uint8)
-    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    if frame is None:
-        raise RuntimeError("Screenshot ADB non decodificabile (screencap fallito?).")
-    return frame
+def adb_screenshot(retries=3, retry_delay=1.0):
+    """Cattura lo schermo dell'emulatore e ritorna un array numpy BGR (OpenCV).
+
+    Ritenta in caso di fallimento: subito dopo un avvio a freddo (sveglia
+    via Wake-on-LAN + BlueStacks appena lanciato) il primo screencap puo'
+    fallire anche se ADB vede gia' il device "device" pronto (visto dal
+    vivo: CalledProcessError con exit status -1). Prima non c'era nessun
+    ritentativo, quindi un singolo hiccup faceva crashare l'intera sessione.
+
+    Cattura anche cv2.error: uno screencap che torna 0 byte (altro sintomo
+    dello stesso hiccup post-risveglio, visto dal vivo il 27/07) fa fallire
+    cv2.imdecode con un'assertion invece di ritornare un frame None -
+    prima bypassava questo stesso retry pensato apposta per quel caso.
+    """
+    last_error = None
+    for attempt in range(retries):
+        try:
+            result = adb("exec-out", "screencap", "-p", device=DEVICE)
+            img_array = np.frombuffer(result.stdout, dtype=np.uint8)
+            frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            if frame is None:
+                raise RuntimeError("Screenshot ADB non decodificabile (screencap fallito?).")
+            return frame
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError, cv2.error) as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(retry_delay)
+    raise last_error
+
+
+def _adb_retry(func, retries=3, retry_delay=1.0):
+    """Ritenta una chiamata adb (tap/swipe) in caso di intoppo transitorio -
+    stesso tipo di hiccup post-risveglio gia' visto e gestito per lo
+    screenshot (adb_screenshot), ma prima non coperto qui: un singolo
+    fallimento di un tap/swipe contava subito come un errore verso il
+    limite di errori consecutivi della sessione (osservato dal vivo il
+    27/07: 4 sessioni di fila interrotte da singoli intoppi ADB transitori
+    sul tap di "Attacco!", subito dopo un risveglio via Wake-on-LAN).
+    """
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return func()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(retry_delay)
+    raise last_error
 
 
 def adb_tap(x, y):
-    adb("shell", "input", "tap", str(x), str(y), device=DEVICE)
+    _adb_retry(lambda: adb("shell", "input", "tap", str(x), str(y), device=DEVICE))
 
 
 def adb_tap_jittered(x, y, jitter=None):
@@ -176,11 +217,11 @@ def adb_tap_jittered(x, y, jitter=None):
 
 
 def adb_swipe(x1, y1, x2, y2, duration_ms=600):
-    adb(
+    _adb_retry(lambda: adb(
         "shell", "input", "swipe",
         str(x1), str(y1), str(x2), str(y2), str(duration_ms),
         device=DEVICE,
-    )
+    ))
 
 
 # ==========================
@@ -242,6 +283,19 @@ HOME_REGION_DARK_ELIXIR = {
     "height": 34,
 }
 
+# Capacita' massima dei depositi (v2.0, sessioni a durata dinamica invece di
+# un numero fisso di attacchi): toccare la barra oro/elisir apre un tooltip
+# con "Max: N / Produzione oraria: N / In tesoreria: N" - letta dal vivo il
+# 2026-07-25. Si legge da li' invece di un valore fisso perche' cambia ogni
+# volta che si potenzia un deposito. Il tap sullo stesso punto e' un toggle
+# (secondo tap = chiude), scoperto durante i test dell'upgrade mura.
+GOLD_BAR_POINT = (1750, 65)
+ELIXIR_BAR_POINT = (1750, 165)
+STORAGE_MAX_TOOLTIP_REGION = {
+    "left": 1425, "top": 90, "width": 495, "height": 200,
+}
+STORAGE_FULL_THRESHOLD = 0.92  # oltre questa percentuale della capacita' un deposito e' considerato "pieno"
+
 # Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
 # TROOP_SLOTS sono le truppe, HERO_SLOTS gli eroi (regina, re, gran
 # sorvegliante, campionessa). Esercito: 10 draghi elettrici + 1 macchina
@@ -280,7 +334,28 @@ DEPLOY_POINTS = [
     (1600, 250), (1650, 200),  # continuano la stessa diagonale verso l'alto
     (1400, 600), (1350, 650), (1300, 700), (1250, 720), (1200, 740),
     (1150, 760), (1100, 780), (1050, 800), (1000, 820),
+    # Aggiunti il 2026-07-28 dopo un problema segnalato dal vivo dall'utente:
+    # su basi molto grandi/con camera molto zoomata, la diagonale sopra resta
+    # dentro la zona rossa quasi ovunque (lo zoom non e' regolabile via ADB -
+    # ne' da tastiera/mouse via SSH per l'isolamento delle window station di
+    # Windows, ne' via pizzico multitouch raw: il device "BlueStacks Virtual
+    # Touch" espone solo ABS_MT_POSITION_X/Y senza ABS_MT_SLOT, quindi non
+    # sa rappresentare due tocchi simultanei - un vero pinch-to-zoom non e'
+    # possibile a questo livello, non e' un problema di sintassi del comando).
+    # Questi punti, piu' bassi e verso l'angolo destro dello schermo (zona
+    # erba/alberi oltre il bordo della base su schermate di battaglia reali),
+    # sono stati confermati dal vivo: 9 tap su 10 andati a segno (compresi i
+    # piu' estremi) su una base diversa da quelle usate per calibrare i punti
+    # sopra. Aggiunti in coda invece di sostituire i precedenti - un
+    # tentativo passato di spostare l'intera lista piu' lontano dal bordo
+    # "al buio" (senza verifica dal vivo) aveva invece finito fuori
+    # dall'area valida su altre basi (vedi commento sopra), quindi qui si
+    # amplia il pool di punti tra cui pescare invece di rimpiazzarlo.
+    (1450, 700), (1550, 750), (1650, 800), (1500, 850), (1350, 700),
+    (1500, 700), (1600, 750), (1700, 800), (1550, 900), (1400, 750),
+    (1450, 800), (1600, 850),
 ]
+
 # Gli eroi usavano un unico punto fisso (1350, 550): su alcune basi quel
 # punto e' troppo vicino alle mura (non e' sul bordo esterno come i
 # DEPLOY_POINTS sopra) e nessun eroe veniva schierato - scoperto dal vivo
@@ -303,7 +378,7 @@ DEPLOY_JITTER_PX = 0
 # (563,500)->(563,250) su 1440x900; da ricalibrare se non allinea bene.
 DRAG_START = (750, 600)
 DRAG_END = (750, 300)
-DRAG_DURATION = 0.6
+DRAG_DURATION = 0.45
 
 # Pulsante rosso "Termina battaglia" / "Resa" (stessa posizione, testo
 # diverso a seconda che tu abbia gia' schierato truppe o no). Se hai gia'
@@ -311,6 +386,56 @@ DRAG_DURATION = 0.6
 # (Annulla/OK): il pulsante OK verde e' a CONFIRM_END_BATTLE_BUTTON.
 END_BATTLE_BUTTON = (140, 785)
 CONFIRM_END_BATTLE_BUTTON = (1150, 670)
+
+# Upgrade mura (v2.0, flag "auto_wall_upgrade"): a fine sessione, se c'e'
+# un costruttore libero, mette in coda l'upgrade di quante piu' mura
+# possibile con le risorse rimaste in casa. Le mura non richiedono tempo
+# di costruzione (acquisto istantaneo con oro o elisir): "costruttore
+# libero" qui e' solo il segnale scelto dall'utente per capire se e' un
+# buon momento per investire in progressione invece di continuare a
+# farmare soltanto. Coordinate calibrate dal vivo (screenshot 1920x1080)
+# il 2026-07-23/24; la posizione del badge costruttori in alto e' emersa
+# stabile nei test dal vivo (l'utente conferma che non si sposta).
+BUILDER_BADGE_POINT = (955, 65)           # icona/badge "liberi/totali" in alto
+BUILDER_BADGE_REGION = {                   # ritaglio stretto sulla sola cifra "liberi"
+    "left": 938, "top": 38, "width": 40, "height": 52,
+}
+WALL_DROPDOWN_REGION = {                   # area del menu a tendina "Miglioramenti"
+    "left": 630, "top": 150, "width": 700, "height": 720,
+}
+WALL_DROPDOWN_SCROLL = ((975, 700), (975, 300))  # swipe per scorrere la lista in cerca di "Muro"
+WALL_ACTION_BAR_REGION = {                 # barra pulsanti in basso dopo aver selezionato un muro
+    "left": 300, "top": 760, "width": 1350, "height": 160,
+}
+GENERIC_DIALOG_OK_POINT = (1180, 693)      # pulsante "OK" dei popup di conferma generici del
+                                            # gioco (es. "Migliora le mura?", "Terminare
+                                            # battaglia?"): stessa posizione fissa per entrambi,
+                                            # verificato dal vivo, non serve rilevarlo dinamicamente
+DESELECT_POINT = (1750, 65)                # barra dell'oro in alto a destra: elemento UI fisso
+                                            # (non il mondo di gioco), utile per deselezionare
+                                            # qualunque cosa con due tap sullo stesso punto. Un punto
+                                            # "vuoto" sulla mappa NON e' mai davvero sicuro: la
+                                            # telecamera si sposta selezionando dalla lista, quindi lo
+                                            # stesso punto puo' cadere su decorazioni cliccabili o
+                                            # perfino sulla barca per il villaggio costruttori
+                                            # (scoperto dal vivo). Suggerito dall'utente: due tap sullo
+                                            # stesso elemento UI fisso (qui la barra oro) deseleziona
+                                            # in modo affidabile qualsiasi pannello/selezione aperta.
+
+
+def deselect_all():
+    """Chiude qualunque pannello/selezione aperta (menu upgrade, muro
+    selezionato, ecc.) toccando due volte lo stesso punto della barra
+    dell'oro in alto: un elemento di interfaccia fisso, non una coordinata
+    sulla mappa di gioco (che si sposta con la telecamera ed e' quindi
+    inaffidabile per questo scopo - vedi commento su DESELECT_POINT).
+    """
+    adb_tap(*DESELECT_POINT)
+    time.sleep(0.6)
+    adb_tap(*DESELECT_POINT)
+    time.sleep(1.0)
+WALL_MAX_SCROLL_ATTEMPTS = 6
+WALL_MAX_ADD_TAPS = 60   # tetto di sicurezza sui tap "+1" (non dovrebbe mai servire arrivarci)
 
 # Parametri di farming regolabili dalla dashboard web (sezione Impostazioni):
 # letti da config.json accanto allo script, con questi valori come default
@@ -334,6 +459,7 @@ _CONFIG_DEFAULTS = {
     "home_low_dark_elixir": 1500,
     "max_triggers": 20,
     "session_duration_minutes": 50,
+    "auto_wall_upgrade": False,
 }
 
 
@@ -351,8 +477,35 @@ def load_config():
 _config = load_config()
 
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
-CLICK_INTERVAL_RANGE = (0.10, 0.22)  # intervallo casuale tra un tap e l'altro, invece di uno fisso
-BATTLE_START_MAX_WAIT = 2.0   # attesa fissa dopo aver accettato un bersaglio sopra soglia
+CLICK_INTERVAL_RANGE = (0.08, 0.14)  # intervallo breve e variabile: accelera il deploy
+                                      # senza togliere a BlueStacks il tempo di registrare ogni tap
+BATTLE_START_MAX_WAIT = 40.0  # durata massima del countdown di matchmaking: dopo lo scouting
+                               # si attende solo la parte ancora rimanente. Bug trovato e
+                               # fixato il 2026-07-28: il valore era rimasto a 2.0 fin dalla
+                               # riscrittura ADB (commit b5bdf6b), in contraddizione con il
+                               # docstring di wait_for_battle_start() che descrive proprio
+                               # questa attesa fissa. Quando lo scouting accetta il primo
+                               # avversario trovato (bottino sopra soglia, l'uscita più comune
+                               # dal loop), il countdown non e' ancora consumato: con 2.0s
+                               # deploy_army() iniziava a schierare mentre la battaglia non era
+                               # ancora davvero iniziata, e i tap nella finestra "morta" del
+                               # countdown non hanno alcun effetto - da qui il sintomo osservato
+                               # in produzione (2-3 truppe schierate invece di 10).
+                               #
+                               # Portato prima a 30.0 (durata del countdown osservata dal vivo
+                               # via ADB manuale: 24-28s), poi a 40.0 dopo un test in produzione
+                               # reale lo stesso giorno che ha mostrato risultati incoerenti con
+                               # 30.0 (attacco 1: 0 truppe/0% danno, attacco 2: 0 truppe/0%
+                               # danno, attacco 3: 4/10 truppe/21% danno) - il countdown reale
+                               # a quanto pare non è sempre 28-30s netti, e con un'attesa al
+                               # limite anche solo i primi tap di deploy_army() (che impiega
+                               # circa 10-15s a schierare tutto) rischiano di cadere ancora
+                               # nella finestra morta, spiegando sia il fallimento totale che
+                               # quello parziale (i tap piu' tardivi nel giro, quando il tempo
+                               # reale trascorso supera finalmente il countdown, vanno a segno).
+                               # Nessuna modifica a DEPLOY_POINTS/TROOP_SLOTS/HERO_SLOTS: si sono
+                               # dimostrati corretti quando il timing e' sufficiente (confermato
+                               # sia a mano - 9/10 - sia in produzione).
 BATTLE_DURATION_WAIT = (45.0, 120.0)  # attesa (min, max) prima di terminare la battaglia da soli
                                        # (range allargato in v1.8, la battaglia dura al massimo
                                        # 3 minuti quindi c'e' margine per piu' variazione)
@@ -577,6 +730,513 @@ def read_home_resources():
     }
 
 
+def read_storage_max(bar_point, debug_name):
+    """Legge la capacita' massima del deposito (oro o elisir) aprendo il
+    tooltip che compare toccando la barra della risorsa in alto a destra
+    (mostra "Max: N", "Produzione oraria: N", "In tesoreria: N"). Non e' un
+    valore fisso nel codice perche' cambia ogni volta che si potenzia un
+    deposito. Il tap sullo stesso punto e' un toggle: un secondo tap chiude
+    di nuovo il tooltip, cosi' non si lascia in giro nulla di aperto.
+    """
+    adb_tap(*bar_point)
+    time.sleep(1.0)
+    frame = adb_screenshot()
+    l, t = STORAGE_MAX_TOOLTIP_REGION["left"], STORAGE_MAX_TOOLTIP_REGION["top"]
+    w, h = STORAGE_MAX_TOOLTIP_REGION["width"], STORAGE_MAX_TOOLTIP_REGION["height"]
+    crop = frame[t:t + h, l:l + w]
+    text = pytesseract.image_to_string(crop, config="--psm 6")
+    cv2.imwrite(f"debug_storage_max_{debug_name}.png", crop)
+    adb_tap(*bar_point)
+    time.sleep(0.8)
+
+    match = re.search(r"Max[^\d]*([\d.,\s]+)", text)
+    if not match:
+        return None
+    digits = re.sub(r"[^\d]", "", match.group(1))
+    return int(digits) if digits else None
+
+
+def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
+    """True se ALMENO UNA tra oro ed elisir in casa e' oltre `threshold`
+    della propria capacita' massima (letta dal vivo, vedi read_storage_max).
+    Usato a fine sessione per decidere se continuare a farmare o fermarsi a
+    investire nelle mura: invece di un numero fisso di attacchi, si continua
+    finche' i depositi non sono davvero pieni (scelta esplicita
+    dell'utente, per non sprecare bottino che andrebbe perso perche' il
+    deposito e' gia' colmo).
+
+    Basta UNA valuta piena (non serve che lo siano entrambe): se l'elisir e'
+    gia' colmo ma l'oro no (es. la sessione sta dando priorita' all'oro
+    perche' scarso), continuare ad attaccare sprecherebbe comunque tutto
+    l'elisir guadagnato in ogni attacco. Meglio fermarsi subito e investire
+    quello che c'e' nelle mura (try_wall_upgrade prova comunque entrambe le
+    valute, vedi _run_wall_upgrade_round) - scoperto dal vivo il 2026-07-25:
+    con la vecchia condizione "entrambe piene" l'elisir restava sprecato
+    attacco dopo attacco in attesa che anche l'oro si riempisse.
+
+    Se la lettura della capacita' massima fallisce (OCR/tooltip inatteso),
+    ritorna False per sicurezza: meglio affidarsi al tetto di sicurezza a
+    numero fisso di attacchi che rischiare un ciclo che non si ferma mai.
+    """
+    home = read_home_resources()
+    gold_max = read_storage_max(GOLD_BAR_POINT, "gold")
+    elixir_max = read_storage_max(ELIXIR_BAR_POINT, "elixir")
+
+    if not gold_max or not elixir_max:
+        print("[STORAGE] Lettura capacita' massima non riuscita, mi affido al tetto di sicurezza sul numero di attacchi.")
+        return False
+    if home.get("gold") is None or home.get("elixir") is None:
+        return False
+
+    # Controllo di sanita': il massimo non puo' mai essere inferiore a
+    # quanto c'e' gia' in casa. Tesseract a volte "perde" delle cifre su
+    # numeri con separatori delle migliaia (visto dal vivo: "26 000 000"
+    # letto come "26000") - se capita, la lettura e' inutilizzabile, meglio
+    # scartarla che calcolare una percentuale assurda.
+    if gold_max < home["gold"] or elixir_max < home["elixir"]:
+        print(f"[STORAGE] Lettura capacita' inverosimile (oro max {gold_max}, elisir max {elixir_max} - inferiori a quanto gia' in casa), scarto e mi affido al tetto di sicurezza.")
+        return False
+
+    gold_ratio = home["gold"] / gold_max
+    elixir_ratio = home["elixir"] / elixir_max
+    print(f"[STORAGE] Oro {home['gold']}/{gold_max} ({gold_ratio:.0%}), Elisir {home['elixir']}/{elixir_max} ({elixir_ratio:.0%}).")
+    return gold_ratio >= threshold or elixir_ratio >= threshold
+
+
+def _find_text_center(frame, region, needle):
+    """Cerca `needle` (case-insensitive, anche come sottostringa) nel testo
+    OCR di una regione e ritorna il centro della prima occorrenza in
+    coordinate assolute dello screenshot, oppure None se non trovato.
+    Usato per il menu upgrade mura, dove il testo si trova su uno sfondo
+    fotografico (il villaggio dietro il pannello semi-trasparente) invece
+    che su un pannello UI solido: un threshold semplice sul bianco basta
+    perche' qui, a differenza delle cifre del bottino, non serve la
+    validazione per-carattere di _ocr_region_to_int (il rischio non e' una
+    cifra fantasma ma solo non trovare la parola, gia' gestito ritornando
+    None).
+    """
+    l, t, w, h = region["left"], region["top"], region["width"], region["height"]
+    crop = frame[t:t + h, l:l + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    data = pytesseract.image_to_data(mask, config="--oem 3 --psm 6", output_type=pytesseract.Output.DICT)
+    for i, word in enumerate(data["text"]):
+        if needle.lower() in word.lower():
+            cx = l + data["left"][i] + data["width"][i] // 2
+            cy = t + data["top"][i] + data["height"][i] // 2
+            return (cx, cy)
+    return None
+
+
+def _find_action_bar_buttons(frame):
+    """Trova i pulsanti (rettangoli bianchi arrotondati) nella barra azioni
+    in basso dopo aver selezionato un muro, e li ritorna come lista di
+    centri (x, y) ordinati da sinistra a destra.
+
+    Molto piu' affidabile della ricerca testuale via OCR su questi
+    pulsanti: le etichette ("Migliora ancora", "Aggiungi mura +1", ecc.)
+    sono in caratteri piccoli e stilizzati che Tesseract legge male,
+    scoperto dal vivo (risultati tipo "Migliona", "Mighona" invece di
+    "Migliora", nessuna occorrenza pulita di "ancora" trovata affatto).
+    I pulsanti stessi pero' sono rettangoli bianchi netti su sfondo vario,
+    facili da individuare per contorno indipendentemente da cosa c'e'
+    scritto sopra. L'ordine dei pulsanti e' sempre lo stesso per un dato
+    stato del pannello (visto dal vivo: 5 pulsanti nella selezione singola
+    da menu - Info, Migliora ancora, Migliora oro, Migliora elisir, N
+    Migliora gemme - e 5 nella modalita' batch dopo "Migliora ancora" -
+    Togli mura -1, Aggiungi +10, Aggiungi +1, Migliora oro, Migliora
+    elisir), quindi chi chiama puo' indicizzare per posizione.
+    """
+    l, t, w, h = WALL_ACTION_BAR_REGION["left"], WALL_ACTION_BAR_REGION["top"], WALL_ACTION_BAR_REGION["width"], WALL_ACTION_BAR_REGION["height"]
+    crop = frame[t:t + h, l:l + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes = []
+    for c in contours:
+        x, y, bw, bh = cv2.boundingRect(c)
+        if bw > 100 and bh > 100:  # scarta il rumore, tiene solo pulsanti veri
+            boxes.append((l + x + bw // 2, t + y + bh // 2))
+    boxes.sort(key=lambda p: p[0])
+    return boxes
+
+
+def _find_action_bar_buttons_retry(min_count, attempts=3, delay=0.8, debug_name=None):
+    """Come _find_action_bar_buttons, ma ritenta prima di arrendersi.
+
+    Scoperto dal vivo (segnalato dall'utente): a volte il bot trova il
+    muro, lo seleziona, ma poi il flusso si interrompe senza fare
+    l'upgrade - probabile causa, la singola pausa fissa dopo un tap non
+    basta sempre perche' l'animazione (chiusura lista, apertura pannello)
+    finisca, e il primo screenshot trova meno pulsanti del previsto anche
+    se il pannello e' pronto un attimo dopo. Ritenta con un nuovo
+    screenshot invece di rinunciare al primo tentativo.
+
+    Se anche dopo tutti i tentativi il conteggio non torna, salva un
+    debug_action_bar_<debug_name>.png (crop della barra pulsanti) - la
+    prima volta che questo e' successo dal vivo (2026-07-26, "1 pulsante
+    invece di 5") non c'era nessuna immagine per capire cosa fosse
+    davvero a schermo in quel momento, solo il numero nel log.
+    """
+    buttons = []
+    frame = None
+    for attempt in range(attempts):
+        frame = adb_screenshot()
+        buttons = _find_action_bar_buttons(frame)
+        if len(buttons) >= min_count:
+            return buttons
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    if debug_name and frame is not None:
+        l, t = WALL_ACTION_BAR_REGION["left"], WALL_ACTION_BAR_REGION["top"]
+        w, h = WALL_ACTION_BAR_REGION["width"], WALL_ACTION_BAR_REGION["height"]
+        cv2.imwrite(f"debug_action_bar_{debug_name}.png", frame[t:t + h, l:l + w])
+    return buttons
+
+
+WALL_COST_LABEL_OFFSET = (0, -55)   # dal centro del pulsante "Migliora" al centro
+                                     # dell'etichetta di costo sopra di esso
+WALL_COST_LABEL_SIZE = (90, 15)     # meta' larghezza/altezza del ritaglio da leggere
+
+
+def _wall_cost_is_red(frame, button_center):
+    """True se il costo mostrato sopra il pulsante 'Migliora' (oro o
+    elisir) e' colorato di rosso - il gioco lo fa quando quella valuta
+    selezionata non basta a pagare le mura scelte.
+
+    Scoperto dal vivo il 2026-07-27, in sostituzione della lettura OCR del
+    costo (rimossa da _scroll_to_wall_entry): quella lettura si rompeva in
+    modo sistematico su certe voci della lista mura. Il colore invece e'
+    un segnale binario molto piu' robusto - non serve leggere la cifra,
+    basta sapere se e' bianca (va bene) o rossa (non basta).
+
+    Calibrato dal vivo su uno screenshot con lo stesso costo mostrato in
+    entrambi i colori fianco a fianco (oro insufficiente/rosso, elisir
+    sufficiente/bianco): il testo bianco ha R-G ~ 6-9, il rosso ~ 36 - la
+    soglia di 20 sta comodamente a meta' tra i due, con ampio margine.
+    """
+    cx, cy = button_center
+    ox, oy = WALL_COST_LABEL_OFFSET
+    hw, hh = WALL_COST_LABEL_SIZE
+    x, y = cx + ox, cy + oy
+    crop = frame[y - hh:y + hh, x - hw:x + hw]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    bright_mask = cv2.inRange(hsv, (0, 0, 150), (180, 255, 255))
+    pixels = crop[bright_mask > 0]
+    if len(pixels) < 20:
+        return False
+    b = pixels[:, 0].mean()
+    g = pixels[:, 1].mean()
+    r = pixels[:, 2].mean()
+    return (r - g) > 20
+
+
+BUILDER_BADGE_ZERO_REF_FILE = "builder_badge_zero_ref.png"
+_builder_badge_zero_ref = cv2.imread(BUILDER_BADGE_ZERO_REF_FILE, cv2.IMREAD_GRAYSCALE)
+
+
+def has_free_builder():
+    """True se il badge costruttori in alto mostra un numero di 'liberi'
+    diverso da zero. Non legge la cifra esatta (tentato con OCR, ma su un
+    ritaglio cosi' stretto - una cifra sola piu' un pezzetto della "/"
+    accanto - sia psm 13 che psm 7 si sono rivelati fragili dal vivo,
+    a volte non leggendo nulla pur con una maschera pulita): invece
+    confronta il ritaglio pixel-per-pixel con un riferimento dello "0"
+    salvato in BUILDER_BADGE_ZERO_REF_FILE. Molto piu' affidabile perche'
+    ci interessa solo "zero o non zero", non il valore esatto. Ritorna
+    False anche se il riferimento di confronto non si carica: meglio
+    saltare l'upgrade che rischiare una lettura sbagliata.
+    """
+    if _builder_badge_zero_ref is None:
+        print("[MURA] Riferimento badge costruttori non trovato, salto per sicurezza.")
+        return False
+
+    frame = adb_screenshot()
+    l = BUILDER_BADGE_REGION["left"]
+    t = BUILDER_BADGE_REGION["top"]
+    w = BUILDER_BADGE_REGION["width"]
+    h = BUILDER_BADGE_REGION["height"]
+    crop = frame[t:t + h, l:l + w]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([0, 0, 180]), np.array([180, 60, 255]))
+    cv2.imwrite("debug_builder_badge.png", mask)
+
+    if mask.shape != _builder_badge_zero_ref.shape:
+        return False
+    match_ratio = (mask == _builder_badge_zero_ref).mean()
+    is_zero = match_ratio > 0.95
+    return not is_zero
+
+
+def _scroll_to_wall_entry():
+    """Scorre il menu upgrade finche' non trova la voce 'Muro x<N>', fino
+    a un numero massimo di tentativi. Ritorna il centro della voce trovata,
+    o None se non la trova.
+
+    Non legge piu' il costo unitario da qui (rimosso il 2026-07-27): quella
+    lettura OCR si rompeva in modo sistematico su certe voci della lista
+    (una linea decorativa dell'interfaccia ai margini della zona di lettura
+    veniva scambiata da Tesseract per una cifra fantasma, scartando
+    l'intera lettura anche quando il numero vero era perfettamente
+    leggibile). Il costo non serve piu': _run_wall_upgrade_round ora decide
+    quante mura aggiungere osservando il COLORE del costo sul pulsante
+    Migliora (il gioco lo mostra in rosso quando non basta la valuta
+    selezionata) invece di calcolarlo da un numero letto via OCR.
+    """
+    for _ in range(WALL_MAX_SCROLL_ATTEMPTS):
+        frame = adb_screenshot()
+        center = _find_text_center(frame, WALL_DROPDOWN_REGION, "Muro")
+        if center:
+            return center
+        (x1, y1), (x2, y2) = WALL_DROPDOWN_SCROLL
+        adb_swipe(x1, y1, x2, y2, duration_ms=600)
+        time.sleep(1.0)
+    return None
+
+
+def _run_wall_upgrade_round(force_currency=None):
+    """Esegue un singolo giro di upgrade mura: apre il menu, trova la voce
+    'Muro', seleziona quante piu' mura possibile con le risorse disponibili
+    e conferma il pagamento. Un muro alla volta ("Aggiungi mura +1", mai
+    "+10": le risorse disponibili non bastano quasi mai per batch cosi'
+    grandi, scelta esplicita dell'utente - il gioco stesso puo' rifiutare il
+    +10 con l'avviso "Rimangono da selezionare meno di 10 mura disponibili"
+    se ne restano pochi di quel livello).
+
+    `force_currency` ("oro"/"elisir"/None): se specificato paga sempre con
+    quella valuta (usato per un secondo giro esplicito sull'altra valuta,
+    vedi try_wall_upgrade); se None sceglie automaticamente quella piu'
+    abbondante in casa (comportamento originale, primo giro).
+
+    Ritorna una tupla (valuta_pagata, motivo_se_saltato): valuta_pagata e'
+    "oro"/"elisir" se ha confermato un upgrade (motivo allora e' None);
+    None se ha saltato, col motivo come stringa leggibile - usato da
+    try_wall_upgrade per avvisare via Telegram invece di rinunciare in
+    silenzio (scoperto dal vivo: dall'esterno un tentativo fallito qui e'
+    indistinguibile da un crash, il bot si ferma comunque a fine sessione).
+    """
+    adb_tap(*BUILDER_BADGE_POINT)
+    time.sleep(1.5)
+
+    wall_center = _scroll_to_wall_entry()
+    if not wall_center:
+        # Riprova riaprendo il menu una volta prima di arrendersi: se il tap
+        # sul badge non ha aperto il menu la prima volta (es. lag/animazione
+        # in corso), scorrere un pannello chiuso non trova mai nulla.
+        print("[MURA] Voce 'Muro' non trovata al primo giro, riprovo riaprendo il menu...")
+        adb_tap(*BUILDER_BADGE_POINT)
+        time.sleep(1.0)
+        adb_tap(*BUILDER_BADGE_POINT)
+        time.sleep(1.5)
+        wall_center = _scroll_to_wall_entry()
+    if not wall_center:
+        print("[MURA] Non ho trovato la voce 'Muro' nel menu, salto.")
+        deselect_all()
+        return None, "voce 'Muro' non trovata nel menu"
+
+    adb_tap(*wall_center)
+    time.sleep(1.5)
+
+    # Selezionare una voce dalla lista NON chiude la lista: resta aperta e
+    # visibile in trasparenza dietro la barra pulsanti del muro selezionato
+    # (verificato dal vivo, non e' un frame di transizione ma lo stato
+    # stabile), confondendo il rilevamento dei pulsanti per contorno qui
+    # sotto. Ritoccare il badge dei costruttori la chiude esplicitamente
+    # (stesso "toggle" gia' usato per aprirla) senza deselezionare il muro.
+    adb_tap(*BUILDER_BADGE_POINT)
+    time.sleep(1.5)
+
+    # Selezione singola da menu: pulsanti bianchi rilevati sono o 4 (Info |
+    # Migliora ancora | Migliora oro | Migliora elisir) o 5 se compare anche
+    # "Selez. Riga" (visto dal vivo che puo' comparire o no) - il pulsante
+    # N Migliora a gemme e' colorato, non bianco, quindi non viene mai
+    # incluso in questo conteggio. In entrambi i casi "Migliora ancora" e'
+    # sempre il terzultimo (subito prima dei due Migliora oro/elisir).
+    # Uso il retry: la lista messa qui sopra si chiude un attimo dopo il
+    # nostro tap, il primo screenshot puo' arrivare prima che l'animazione
+    # sia finita e trovare meno pulsanti del previsto.
+    buttons = _find_action_bar_buttons_retry(4, debug_name="selezione")
+    if len(buttons) < 4:
+        print(f"[MURA] Barra pulsanti inattesa ({len(buttons)} pulsanti invece di 4-5), salto.")
+        deselect_all()
+        return None, f"barra pulsanti inattesa dopo la selezione ({len(buttons)} invece di 4-5)"
+
+    ancora_center = buttons[-3]
+    adb_tap(*ancora_center)
+    time.sleep(1.2)
+
+    home = read_home_resources()
+    available_gold = home.get("gold") or 0
+    available_elixir = home.get("elixir") or 0
+
+    # Modalita' batch dopo "Migliora ancora": Togli mura -1 | Aggiungi +10 |
+    # Aggiungi +1 | Migliora oro | Migliora elisir (stessa griglia a 5
+    # posizioni, verificato dal vivo).
+    buttons = _find_action_bar_buttons_retry(5, debug_name="batch")
+    if len(buttons) < 5:
+        # Scoperto dal vivo il 2026-07-26: capitato un caso con un solo
+        # pulsante trovato anche dopo i retry (non solo un'animazione
+        # lenta) - prima di arrendersi, riprovo il tap su "Migliora ancora"
+        # una seconda volta, nel caso il primo non fosse arrivato a segno.
+        print(f"[MURA] Barra pulsanti batch inattesa ({len(buttons)} invece di 5), ritento il tap su 'Migliora ancora'...")
+        adb_tap(*ancora_center)
+        time.sleep(1.5)
+        buttons = _find_action_bar_buttons_retry(5, debug_name="batch")
+    if len(buttons) < 5:
+        print(f"[MURA] Barra pulsanti batch ancora inattesa ({len(buttons)} pulsanti invece di 5), salto.")
+        deselect_all()
+        return None, f"barra pulsanti batch inattesa ({len(buttons)} invece di 5)"
+
+    add_one_point = buttons[2]
+    remove_one_point = buttons[0]
+
+    # Il costo e' lo stesso sia in oro che in elisir (verificato dal vivo:
+    # entrambi i pulsanti "Migliora" mostrano lo stesso numero, che scala
+    # allo stesso modo aggiungendo mura), quindi per scegliere la valuta
+    # piu' abbondante basta confrontare le quantita' in casa - non serve
+    # sapere il costo. Se non e' forzata una valuta specifica si sceglie
+    # quella piu' abbondante (primo giro); altrimenti si usa quella
+    # richiesta (secondo giro, per non sprecare l'altra se anche lei e'
+    # quasi piena).
+    if force_currency:
+        pay_currency = force_currency
+    else:
+        pay_currency = "oro" if available_gold >= available_elixir else "elisir"
+    pay_point = buttons[3] if pay_currency == "oro" else buttons[4]
+    print(f"[MURA] Risorse in casa: {available_gold} oro, {available_elixir} elisir -> pago in {pay_currency}.")
+
+    # Quante mura aggiungere: invece di calcolarlo da un costo unitario
+    # letto via OCR (si rompeva in modo sistematico su certe voci della
+    # lista - una linea decorativa dell'interfaccia catturata ai margini
+    # della zona di lettura veniva scambiata per una cifra fantasma, vedi
+    # storico in _scroll_to_wall_entry), si aggiunge un muro alla volta
+    # controllando il COLORE del costo sul pulsante Migliora scelto: il
+    # gioco lo mostra in rosso quando quella valuta non basta piu'. Si
+    # parte gia' con 1 muro selezionato (default dopo "Migliora ancora").
+    # Idea dell'utente, molto piu' robusta di leggere una cifra: un
+    # segnale binario (rosso/non rosso) invece di dover riconoscere le
+    # cifre esatte.
+    frame = adb_screenshot()
+    if _wall_cost_is_red(frame, pay_point):
+        print(f"[MURA] Risorse insufficienti per anche solo il primo muro in {pay_currency}, non confermo nulla.")
+        deselect_all()
+        return None, "risorse insufficienti per almeno un muro"
+
+    target_count = 1
+    for _ in range(WALL_MAX_ADD_TAPS):
+        adb_tap(*add_one_point)
+        time.sleep(0.9)
+        frame = adb_screenshot()
+        if _wall_cost_is_red(frame, pay_point):
+            adb_tap(*remove_one_point)
+            time.sleep(0.9)
+            break
+        target_count += 1
+    else:
+        print(f"[MURA] Raggiunto il tetto di sicurezza di {WALL_MAX_ADD_TAPS} mura senza mai vedere il costo in rosso.")
+
+    print(f"[MURA] Punto a {target_count} mura, pago in {pay_currency}.")
+
+    buttons = _find_action_bar_buttons_retry(5, debug_name="dopo_aggiungi")
+    if len(buttons) < 5:
+        print("[MURA] Pulsanti spariti dopo gli 'Aggiungi mura', non confermo nulla per sicurezza.")
+        deselect_all()
+        return None, "pulsanti spariti dopo gli 'Aggiungi mura'"
+
+    pay_point = buttons[3] if pay_currency == "oro" else buttons[4]
+    adb_tap(*pay_point)
+    time.sleep(1.5)
+
+    # Scoperto dal vivo il 2026-07-25, mai visto prima in questo flusso:
+    # il tap su "Migliora" NON spende subito le risorse, apre un secondo
+    # dialog di conferma ("Migliora le mura" / "Vuoi davvero migliorare le
+    # mura selezionate per <costo> Oro/Elisir?" con Annulla/OK). Senza
+    # questo tap il flusso si blocca qui: nessuna spesa, muro mai messo in
+    # coda. Il pulsante OK e' sempre allo stesso punto fisso dello schermo
+    # (verificato identico anche sul dialog "Terminare battaglia?" di fine
+    # attacco: e' un componente di dialog generico del gioco, non specifico
+    # delle mura), quindi non serve rilevarlo dinamicamente.
+    adb_tap(*GENERIC_DIALOG_OK_POINT)
+    time.sleep(1.5)
+    print(f"[MURA] Confermato upgrade di {target_count} mura, pagato in {pay_currency}.")
+    send_telegram(f"🧱 Upgrade mura: messe in coda {target_count} mura (pagate in {pay_currency}).")
+
+    # Dopo l'OK il dialog si chiude da solo, ma il muro resta selezionato
+    # (pannello singolo con Info + Migliora, costo aggiornato al livello
+    # successivo) - serve comunque un deselect esplicito.
+    deselect_all()
+    time.sleep(1.0)
+    return pay_currency, None
+
+
+def try_wall_upgrade():
+    """A fine sessione (o all'avvio, se i depositi sono gia' pieni), se il
+    flag 'auto_wall_upgrade' e' attivo: controlla se c'e' un costruttore
+    libero e in caso positivo fa un giro di upgrade mura con la valuta piu'
+    abbondante, poi - dato che oro ed elisir hanno lo stesso costo per muro
+    e vogliamo svuotare entrambi i depositi quasi pieni invece di sprecare
+    solo quello non speso nel primo giro - ne fa un secondo con l'altra
+    valuta se e' rimasta abbastanza per almeno un altro muro. Ogni passaggio
+    verifica lo stato reale dello schermo prima di proseguire, come
+    run_attack(): se qualcosa non torna, si interrompe e torna a un punto
+    neutro invece di rischiare tap alla cieca (vicino a questo menu, in
+    alto a destra, c'e' anche il negozio con acquisti veri - scoperto dal
+    vivo un tap impreciso che ci e' finito sopra).
+    """
+    if not _config.get("auto_wall_upgrade"):
+        return
+
+    global current_phase
+    current_phase = "mura"
+    write_status(running=True)
+    print("\n[MURA] Controllo se posso mettere in coda un upgrade mura...")
+
+    if not is_home_screen():
+        print("[MURA] Non siamo nel villaggio, salto.")
+        return
+
+    if not has_free_builder():
+        print("[MURA] Nessun costruttore libero, salto.")
+        return
+    print("[MURA] Almeno un costruttore libero.")
+
+    first_currency, first_reason = _run_wall_upgrade_round()
+    if not first_currency:
+        # Nessun upgrade fatto nonostante un costruttore libero: dall'esterno
+        # e' indistinguibile da un crash (il bot si ferma comunque a fine
+        # sessione, senza aver speso nulla) - avviso subito invece di
+        # lasciare che l'utente lo scopra solo guardando i depositi ancora
+        # pieni (segnalato dal vivo, capitava senza nessuna notifica).
+        print(f"[MURA] Nessun upgrade fatto ({first_reason}).")
+        send_telegram(
+            f"⚠️ Fase mura: nessun upgrade effettuato ({first_reason}). "
+            f"Depositi probabilmente ancora pieni, il bot si e' fermato: serve un controllo manuale."
+        )
+        return
+
+    # Secondo giro forzato sull'ALTRA valuta: oro ed elisir costano uguale
+    # per muro, quindi se il primo giro ha speso la valuta piu' abbondante
+    # l'altra potrebbe essere rimasta quasi piena e sprecata (richiesta
+    # esplicita dell'utente: svuotare entrambi i depositi, non solo uno).
+    # _run_wall_upgrade_round si ferma da sola senza confermare nulla se non
+    # ne resta abbastanza nemmeno per un muro, quindi e' sicuro chiamarla
+    # comunque invece di ricalcolare qui se vale la pena provarci.
+    other_currency = "elisir" if first_currency == "oro" else "oro"
+    print(f"[MURA] Provo un secondo giro pagando in {other_currency}, per non sprecare anche quella valuta...")
+    second_currency, second_reason = _run_wall_upgrade_round(force_currency=other_currency)
+    if not second_currency:
+        # Stesso discorso del primo giro: senza questo avviso, un secondo
+        # giro fallito (es. OCR del costo respinta come "lettura fantasma",
+        # visto dal vivo il 2026-07-26) passava del tutto inosservato -
+        # l'utente vedeva solo il messaggio di successo del primo giro e
+        # scopriva la seconda valuta rimasta piena solo controllando a mano.
+        print(f"[MURA] Secondo giro ({other_currency}) senza upgrade ({second_reason}).")
+        send_telegram(
+            f"⚠️ Fase mura: il giro in {other_currency} non ha fatto nessun upgrade ({second_reason}). "
+            f"Quella valuta e' probabilmente rimasta piena."
+        )
+
+
 def determine_priority_resource():
     """Decide su quale risorsa concentrare la sessione: quella con il
     deficit maggiore rispetto alla propria soglia 'basso' (home_low_*). Se
@@ -613,7 +1273,7 @@ def scroll_down_by_drag():
     """
     print("[ACTION] Scroll verso il basso...")
     adb_swipe(DRAG_START[0], DRAG_START[1], DRAG_END[0], DRAG_END[1], int(DRAG_DURATION * 1000))
-    time.sleep(1.0)
+    time.sleep(0.7)
 
 
 def deploy_army():
@@ -631,7 +1291,7 @@ def deploy_army():
     print("[DEPLOY] Schiero le truppe...")
     for slot_x, taps in TROOP_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(random.uniform(0.12, 0.20))
+        time.sleep(random.uniform(0.08, 0.14))
         # Mescola PRIMA di tagliare a `taps` elementi, non dopo: altrimenti
         # con taps < len(DEPLOY_POINTS) si provano sempre e solo gli stessi
         # primi punti della lista (mai variati) - bug trovato dal vivo con
@@ -651,7 +1311,7 @@ def deploy_army():
     point_idx = 0
     for slot_x in HERO_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(random.uniform(0.12, 0.20))
+        time.sleep(random.uniform(0.08, 0.14))
         # 2 tap su punti diversi invece di uno solo: se il primo non va a
         # segno (stesso problema visto con le truppe), il secondo copre.
         for _ in range(2):
@@ -660,12 +1320,12 @@ def deploy_army():
             adb_tap_jittered(dx, dy)
             time.sleep(random.uniform(*CLICK_INTERVAL_RANGE))
 
-    time.sleep(random.uniform(1.6, 2.4))
+    time.sleep(random.uniform(0.9, 1.3))
 
     print("[DEPLOY] Attivo le abilità eroi...")
     for slot_x in HERO_SLOTS:
         adb_tap(slot_x, TROOP_BAR_Y)
-        time.sleep(random.uniform(0.16, 0.26))
+        time.sleep(random.uniform(0.10, 0.16))
 
 
 # Il countdown di matchmaking del gioco dura ~28-30s da quando un avversario
@@ -689,7 +1349,7 @@ def find_and_evaluate_opponent():
     current_phase = "scouting"
     start = time.time()
     for attempt in range(1, MAX_SKIP_ATTEMPTS + 1):
-        time.sleep(0.8)
+        time.sleep(0.5)
 
         if is_home_screen():
             print("[SCOUT] Siamo tornati al villaggio inaspettatamente, interrompo la ricerca.")
@@ -720,17 +1380,19 @@ def find_and_evaluate_opponent():
 
         print("[SCOUT] Sotto soglia (o non letto) -> cerco un altro avversario")
         adb_tap(*SKIP_BUTTON)
-        time.sleep(1.2)
+        time.sleep(0.8)
 
     print("[SCOUT] Raggiunto il limite di tentativi, attacco comunque l'ultima base trovata.")
     return True
 
 
-def wait_for_battle_start(fixed_wait=BATTLE_START_MAX_WAIT):
+def wait_for_battle_start(countdown_started_at, fixed_wait=BATTLE_START_MAX_WAIT):
     """Aspetta che il countdown di matchmaking finisca e la battaglia
     inizi davvero.
 
-    Provare a rilevare la transizione leggendo lo schermo (OCR sul
+    Il countdown decorre anche mentre si valutano/scartano gli avversari:
+    non ricominciamo quindi da zero dopo aver scelto una base, ma aspettiamo
+    solo i secondi che mancano. Provare a rilevare la transizione leggendo lo schermo (OCR sul
     bottino, colore di icone) si è rivelato inaffidabile nei test dal
     vivo: l'OCR a volte legge numeri residui/rumore invece di None, e le
     decorazioni della base (a tema, es. Pasqua/Natale) possono avere
@@ -740,8 +1402,13 @@ def wait_for_battle_start(fixed_wait=BATTLE_START_MAX_WAIT):
     siamo tornati al villaggio (quell'unico controllo si è dimostrato
     affidabile).
     """
-    print(f"[WAIT] Aspetto {fixed_wait:.0f}s che il countdown finisca...")
-    time.sleep(fixed_wait)
+    elapsed = max(0.0, time.monotonic() - countdown_started_at)
+    remaining = max(0.0, fixed_wait - elapsed)
+    print(
+        f"[WAIT] Countdown: trascorsi {elapsed:.1f}s, "
+        f"aspetto ancora {remaining:.1f}s prima di schierare..."
+    )
+    time.sleep(remaining)
 
     if is_home_screen():
         print("[WAIT] Siamo al villaggio, la battaglia non è mai iniziata.")
@@ -777,7 +1444,7 @@ def run_attack():
     # davvero (siamo usciti dal villaggio) prima di proseguire, invece di
     # fidarci ciecamente del solo tempo di attesa.
     adb_tap(*ATTACK_BUTTON)
-    time.sleep(1.5)
+    time.sleep(1.2)
 
     if is_home_screen():
         print("[ATTACK] 'Attacco!' non sembra essersi aperto (popup imprevisto?), riprovo...")
@@ -790,9 +1457,10 @@ def run_attack():
             return
 
     adb_tap(*FIND_MATCH_BUTTON)
-    time.sleep(2.0)
+    time.sleep(1.6)
     adb_tap(*CONFIRM_ATTACK_BUTTON)
-    time.sleep(3.0)
+    countdown_started_at = time.monotonic()
+    time.sleep(2.5)
 
     if not find_and_evaluate_opponent():
         print("[ATTACK] Scouting interrotto, salto questo ciclo.")
@@ -802,7 +1470,7 @@ def run_attack():
         if amount is not None:
             session_totals[resource] += amount
 
-    if not wait_for_battle_start():
+    if not wait_for_battle_start(countdown_started_at):
         print("[ATTACK] La battaglia non è iniziata come previsto, salto lo schieramento.")
         return
 
@@ -824,17 +1492,17 @@ def run_attack():
 
     print("[ACTION] Termino la battaglia...")
     adb_tap(*END_BATTLE_BUTTON)
-    time.sleep(1.5)
+    time.sleep(1.2)
     # Se abbiamo schierato truppe, compare il popup di conferma "Arrendersi?":
     # questo tap non fa nulla se il popup non c'è (tocca lo sfondo del risultato).
     adb_tap(*CONFIRM_END_BATTLE_BUTTON)
-    time.sleep(2.0)
+    time.sleep(1.6)
 
     print("[ACTION] Torno al villaggio...")
     adb_tap(*RETURN_HOME_BUTTON)
-    time.sleep(2.0)
+    time.sleep(1.6)
     adb_tap(*RETURN_HOME_BUTTON)  # nel caso serva un secondo tap (es. schermata forziere)
-    time.sleep(2.0)
+    time.sleep(1.6)
 
 
 def calibrate_coordinates():
@@ -889,17 +1557,42 @@ def main():
         priority_resource, home = determine_priority_resource()
         print(f"[HOME] Risorse in casa: {home} -> risorsa prioritaria della sessione: {priority_resource}")
 
+    # Se i depositi sono gia' quasi pieni all'avvio (es. bot fermo per un
+    # po' mentre oro/elisir si riempivano da soli), l'upgrade mura va fatto
+    # SUBITO, prima del primo attacco - altrimenti quell'attacco farma
+    # bottino che va sprecato perche' il deposito e' gia' colmo. Il
+    # controllo dopo ogni attacco (piu' sotto) da solo non basta: coprirebbe
+    # solo il caso "si sono riempiti durante la sessione", non "erano gia'
+    # pieni all'avvio".
+    try:
+        if storage_is_full():
+            print("[STORAGE] Depositi gia' quasi pieni all'avvio, provo l'upgrade mura prima di attaccare.")
+            try_wall_upgrade()
+    except Exception as e:
+        print(f"[STORAGE] Errore nel controllo iniziale dei depositi, proseguo con gli attacchi: {e}")
+        send_telegram(f"⚠️ Errore nel controllo mura iniziale ({e}), proseguo comunque con gli attacchi.")
+
     start_time = time.time()
     session_start_time = start_time
 
-    # Sessioni un po' irregolari invece di fermarsi sempre esattamente allo
-    # stesso numero di attacchi/minuti (v1.8): variano di poco ad ogni
-    # avvio, cosi' non c'e' un pattern fisso riconoscibile da fuori.
+    # v2.0: la sessione non si ferma piu' a un numero fisso di attacchi, ma
+    # continua finche' i depositi di oro/elisir non sono quasi pieni (vedi
+    # storage_is_full), per non farmare inutilmente ne' sprecare bottino
+    # perso perche' il deposito e' gia' colmo - scelta esplicita dell'utente.
+    # session_max_triggers resta come tetto di sicurezza (se la lettura
+    # della capacita' dei depositi fallisce sistematicamente, es. per un
+    # cambio di UI del gioco, la sessione si ferma comunque invece di
+    # continuare all'infinito). Sessioni un po' irregolari (v1.8) anche qui,
+    # cosi' non c'e' un pattern fisso riconoscibile da fuori.
     session_max_triggers = max(1, MAX_TRIGGERS - random.randint(0, 2))
     session_duration = max(300.0, SESSION_DURATION - random.uniform(0, 300))
 
     write_status(running=True)
-    send_telegram(f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. Farà al massimo {session_max_triggers} attacchi o {int(session_duration/60)} minuti.")
+    send_telegram(
+        f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. "
+        f"Continua finche' i depositi non sono quasi pieni (tetto di sicurezza: "
+        f"{session_max_triggers} attacchi o {int(session_duration/60)} minuti)."
+    )
 
     # Se ADB/BlueStacks va giu' a meta' sessione (es. crash dell'emulatore),
     # ogni attacco fallisce subito con un'eccezione: senza un limite, il
@@ -909,6 +1602,7 @@ def main():
     # solo avviso, invece di continuare a martellare alla cieca.
     MAX_CONSECUTIVE_ERRORS = 3
     consecutive_errors = 0
+    session_ended_cleanly = True
 
     while True:
         now = time.time()
@@ -935,6 +1629,7 @@ def main():
                 send_telegram(f"🛑 {msg} Ultimo errore: {e}\nControlla che BlueStacks/ADB siano ok.")
                 write_status(running=False)
                 append_history_entry(end_reason="errori")
+                session_ended_cleanly = False
                 break
             send_telegram(f"⚠️ Errore durante l'attacco {trigger_count}: {e}")
             write_status(running=True)
@@ -944,13 +1639,39 @@ def main():
         consecutive_errors = 0
         write_status(running=True)
 
-        if trigger_count >= session_max_triggers:
-            msg = f"✅ Bot ha finito di farmare. Raggiunti {trigger_count} attacchi."
+        deposits_full = False
+        try:
+            deposits_full = storage_is_full()
+        except Exception as e:
+            print(f"[STORAGE] Errore durante il controllo depositi, ignoro e proseguo: {e}")
+
+        if deposits_full:
+            msg = f"✅ Depositi quasi pieni, mi fermo per investire nelle mura. Attacchi fatti: {trigger_count}."
             print(f"[STOP] {msg}")
             send_telegram(f"{msg}\n{format_totals_summary()}")
             write_status(running=False)
             append_history_entry()
             break
+
+        if trigger_count >= session_max_triggers:
+            msg = f"✅ Bot ha finito di farmare (tetto di sicurezza sul numero di attacchi, i depositi non risultavano ancora pieni). Raggiunti {trigger_count} attacchi."
+            print(f"[STOP] {msg}")
+            send_telegram(f"{msg}\n{format_totals_summary()}")
+            write_status(running=False)
+            append_history_entry()
+            break
+
+    # Upgrade mura (se richiesto dalle impostazioni) solo a fine sessione
+    # "pulita": se ci siamo fermati per troppi errori di fila, ADB/BlueStacks
+    # sono probabilmente in uno stato inaffidabile e tentare altri tap alla
+    # cieca rischierebbe solo di peggiorare le cose invece di aiutare.
+    if session_ended_cleanly:
+        try:
+            try_wall_upgrade()
+        except Exception as e:
+            print(f"[MURA] Errore durante l'upgrade mura: {e}")
+            send_telegram(f"🛑 Errore durante l'upgrade mura, il bot si e' fermato: {e}")
+        write_status(running=False)
 
 
 if __name__ == "__main__":

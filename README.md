@@ -1,6 +1,6 @@
 # OCR Bot — Clash of Clans (headless via ADB)
 
-**Versione:** 1.9 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+**Versione:** 2.8 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
 
 Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
@@ -18,7 +18,15 @@ Ad ogni ciclo (`run_attack()`):
    - Se è sotto soglia: tocca "Avanti" per cercare un altro avversario, fino a `MAX_SKIP_ATTEMPTS` tentativi.
 3. Appena la battaglia inizia, schiera **tutte** le truppe e gli eroi disponibili in un unico passaggio, sempre nella stessa zona della mappa (lato destro/basso — quella testata con successo: 93% danno, 2 stelle), poi attiva le abilità degli eroi.
 4. Aspetta che la battaglia si svolga (tempo casuale tra `BATTLE_DURATION_WAIT`), poi torna al villaggio.
-5. Ripete, fino a `MAX_TRIGGERS` attacchi o `SESSION_DURATION` (default 50 minuti), poi si ferma da solo.
+5. Ripete finché i depositi di oro ed elisir in casa non sono quasi pieni (letto dal vivo tramite il tooltip "Max" della barra risorse, non un valore fisso), poi si ferma da solo. `MAX_TRIGGERS` attacchi / `SESSION_DURATION` (default 50 minuti) restano come tetto di sicurezza se la lettura della capacità dei depositi dovesse fallire.
+6. Se il flag `auto_wall_upgrade` è attivo (dashboard o `/muraon` su Telegram) e c'è un costruttore libero, a fine sessione mette in coda l'upgrade di quante più mura possibile con le risorse rimaste in casa (pagando con la valuta più abbondante, un muro alla volta). Se il flusso non riesce a completare nessun upgrade (es. un rilevamento UI fallito), manda un avviso Telegram invece di fermarsi in silenzio con i depositi ancora pieni.
+7. I comandi ADB di base (tap, swipe, screenshot) ritentano automaticamente in caso di intoppo transitorio (tipico subito dopo un risveglio a freddo via Wake-on-LAN): un singolo hiccup non conta più come un errore verso il limite di 3 errori consecutivi che ferma la sessione.
+8. Dopo aver accettato un avversario, aspetta solo la parte rimanente del countdown di matchmaking (`BATTLE_START_MAX_WAIT`, fino a ~40s) prima di schierare: il tempo già passato nello scouting viene sottratto. Se lo schieramento parte mentre il countdown non è ancora finito, i tap di deploy cadono in una finestra "morta" e non hanno alcun effetto (bug v2.5 e precedenti — vedi sotto).
+9. Le pause della UI (scroll, selezione truppe/eroi, tap di schieramento e attivazione abilità) sono state ridotte in modo conservativo in v2.8. Non viene ridotto il countdown di battaglia, che è necessario affinché il gioco accetti il deploy.
+
+### Stato noto del piazzamento
+
+Il pool di coordinate di schieramento è quello storico, già validato in precedenza e ripristinato dopo un tentativo di usare solo punti ancora più esterni. In alcune basi il gioco può ancora ignorare parte dei tap di deploy: è un problema aperto di calibrazione, non risolto dalla sola velocizzazione. Servirà un nuovo test mirato con screenshot della battaglia e griglia di riferimento prima di cambiare di nuovo i punti in modo definitivo.
 
 `debug.png` viene sovrascritto ad ogni lettura OCR del bottino con l'immagine post-elaborazione: utile per capire se Tesseract sta leggendo bene la zona giusta.
 
@@ -28,11 +36,17 @@ Ad ogni evento importante (avvio, fine sessione, errori, interruzione manuale) i
 
 ```
 ocr-bot/
-├── BOT_COMPLETO_MAC.py   # script principale
-├── requirements.txt      # dipendenze Python
-├── cred                  # credenziali Telegram (NON versionato, va creato da te)
-├── debug.png              # screenshot di debug OCR (rigenerato ad ogni lettura, NON versionato)
-└── venv/                  # virtualenv Python (NON versionato)
+├── BOT_COMPLETO_MAC.py     # script principale (villaggio primario)
+├── builder_badge_zero_ref.png  # riferimento usato da has_free_builder(), deve stare
+│                                # nella stessa cartella dello script
+├── requirements.txt        # dipendenze Python
+├── cred                    # credenziali Telegram (NON versionato, va creato da te)
+├── minipc/                 # relay Telegram + dashboard web (girano sul mini PC sempre acceso)
+├── windows/                # script di avvio lato PC Windows (run_bot.bat + credenziali)
+├── secondo_villaggio/      # lavoro in corso: bot per il Villaggio Costruttori (non ancora integrato,
+│                            #   vedi secondo_villaggio/README.md per lo stato dettagliato)
+├── archivio/               # roba non più in uso ma tenuta per sicurezza (NON versionato)
+└── venv/                   # virtualenv Python (NON versionato)
 ```
 
 ## Requisiti

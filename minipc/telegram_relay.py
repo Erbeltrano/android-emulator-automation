@@ -9,6 +9,7 @@ Solo libreria standard: nessuna dipendenza da installare.
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -29,12 +30,30 @@ API_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 BTN_AVVIA = "▶️ Avvia"
 BTN_STATO = "📊 Stato"
 BTN_STOP = "⛔ Stop"
+BTN_SCHERMO = "📸 Schermo"
+BTN_MENU = "🔙 Menu principale"
+BTN_VILLAGGIO_PRIMARIO = "🏠 Villaggio Principale"
+BTN_VILLAGGIO_SECONDARIO = "🏗️ Villaggio Secondario"
 
-MENU_KEYBOARD = {
-    "keyboard": [[BTN_AVVIA, BTN_STATO], [BTN_STOP]],
+TOP_MENU_KEYBOARD = {
+    "keyboard": [[BTN_VILLAGGIO_PRIMARIO], [BTN_VILLAGGIO_SECONDARIO]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
+
+VILLAGE_KEYBOARD = {
+    "keyboard": [[BTN_AVVIA, BTN_STATO], [BTN_STOP, BTN_SCHERMO], [BTN_MENU]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
+# Un solo utente autorizzato (controllato su TELEGRAM_CHAT_ID), quindi basta
+# uno stato in memoria condiviso per sapere su quale villaggio stanno
+# operando i pulsanti "Avvia/Stato/Stop/Schermo" - si azzera su "primario"
+# ad ogni riavvio del relay. Il bot del villaggio secondario non esiste
+# ancora (vedi secondo_villaggio/): i comandi restano gia' pronti nel menu,
+# per ora rispondono solo con un avviso invece di fare qualcosa.
+_state = {"village": "primario"}
 
 
 def tg_call(method, params=None, timeout=35):
@@ -47,12 +66,19 @@ def tg_call(method, params=None, timeout=35):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def send_message(text):
+def send_message(text, keyboard=None):
+    """`keyboard=None` mostra la tastiera del villaggio corrente (il caso
+    comune: risposta a un comando avvia/stato/stop/schermo) - si passa
+    esplicitamente TOP_MENU_KEYBOARD solo quando si torna al menu di scelta
+    villaggio.
+    """
+    if keyboard is None:
+        keyboard = VILLAGE_KEYBOARD
     try:
         tg_call("sendMessage", {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": text,
-            "reply_markup": MENU_KEYBOARD,
+            "reply_markup": keyboard,
         })
     except Exception as e:
         print(f"[TELEGRAM] Errore invio messaggio: {e}")
@@ -62,11 +88,70 @@ def get_updates(offset, timeout=30):
     return tg_call("getUpdates", {"offset": offset, "timeout": timeout}, timeout=timeout + 10)
 
 
+def send_photo(image_path):
+    """Manda una foto locale come messaggio Telegram (multipart/form-data
+    costruito a mano: niente librerie esterne, solo urllib).
+    """
+    boundary = f"----coc-bot-{int(time.time() * 1000)}"
+    with open(image_path, "rb") as f:
+        image_data = f.read()
+
+    def field(name, value):
+        return (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        ).encode("utf-8")
+
+    body = field("chat_id", TELEGRAM_CHAT_ID)
+    body += (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"screen.png\"\r\n"
+        "Content-Type: image/png\r\n\r\n"
+    ).encode("utf-8")
+    body += image_data
+    body += f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{API_BASE}/sendPhoto",
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def cmd_villaggio_primario():
+    _state["village"] = "primario"
+    send_message("🏠 Villaggio Principale selezionato.")
+
+
+def cmd_villaggio_secondario():
+    _state["village"] = "secondario"
+    send_message(
+        "🏗️ Villaggio Secondario selezionato.\n"
+        "⚠️ Il bot per questo villaggio non è ancora pronto: Avvia/Stato/Stop "
+        "non fanno ancora nulla. /schermo funziona comunque (cattura solo "
+        "l'emulatore, non dipende dal bot)."
+    )
+
+
+def cmd_menu():
+    send_message("Scegli un villaggio:", keyboard=TOP_MENU_KEYBOARD)
+
+
+def _secondario_non_pronto():
+    send_message("🚧 Bot del Villaggio Secondario non ancora implementato.")
+
+
 def cmd_avvia():
+    if _state["village"] == "secondario":
+        _secondario_non_pronto()
+        return
     bot_control.start_bot(progress=send_message)
 
 
 def cmd_stato():
+    if _state["village"] == "secondario":
+        _secondario_non_pronto()
+        return
     status = bot_control.get_bot_status()
     if not status["windows_on"]:
         send_message("💤 PC Windows spento o non raggiungibile in rete.")
@@ -84,7 +169,41 @@ def cmd_stato():
 
 
 def cmd_stop():
+    if _state["village"] == "secondario":
+        _secondario_non_pronto()
+        return
     bot_control.stop_bot(progress=send_message)
+
+
+def cmd_muraon():
+    settings = bot_control.get_settings()
+    settings["auto_wall_upgrade"] = True
+    bot_control.save_settings(settings)
+    send_message("✅ Upgrade automatico mura attivato: a fine sessione, se c'è un costruttore libero, le risorse farmate andranno a potenziare le mura.")
+
+
+def cmd_muraoff():
+    settings = bot_control.get_settings()
+    settings["auto_wall_upgrade"] = False
+    bot_control.save_settings(settings)
+    send_message("⛔ Upgrade automatico mura disattivato.")
+
+
+def cmd_schermo():
+    tmp_path = os.path.join(tempfile.gettempdir(), "coc_screen_relay.png")
+    ok, err = bot_control.capture_screen(tmp_path)
+    if not ok:
+        send_message(f"❌ Impossibile catturare lo schermo: {err}")
+        return
+    try:
+        send_photo(tmp_path)
+    except Exception as e:
+        send_message(f"❌ Screenshot catturato ma invio a Telegram fallito: {e}")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 COMMANDS = {
@@ -97,6 +216,16 @@ COMMANDS = {
     BTN_STATO: cmd_stato,
     "/stop": cmd_stop,
     BTN_STOP: cmd_stop,
+    "/muraon": cmd_muraon,
+    "/muraoff": cmd_muraoff,
+    "/schermo": cmd_schermo,
+    BTN_SCHERMO: cmd_schermo,
+    "/menu": cmd_menu,
+    BTN_MENU: cmd_menu,
+    "/villaggio1": cmd_villaggio_primario,
+    BTN_VILLAGGIO_PRIMARIO: cmd_villaggio_primario,
+    "/villaggio2": cmd_villaggio_secondario,
+    BTN_VILLAGGIO_SECONDARIO: cmd_villaggio_secondario,
 }
 
 
@@ -107,7 +236,18 @@ def handle_text(text):
     if handler:
         handler()
     elif cmd == "/help":
-        send_message("Usa i pulsanti qui sotto, oppure:\n/avvia - sveglia il PC e avvia il bot\n/stato - controlla se sta girando\n/stop - ferma il bot")
+        send_message(
+            "Usa i pulsanti qui sotto, oppure:\n"
+            "/menu - torna alla scelta villaggio\n"
+            "/villaggio1 - passa al Villaggio Principale\n"
+            "/villaggio2 - passa al Villaggio Secondario\n"
+            "/avvia - sveglia il PC e avvia il bot (del villaggio scelto)\n"
+            "/stato - controlla se sta girando\n"
+            "/stop - ferma il bot\n"
+            "/schermo - manda uno screenshot dell'emulatore\n"
+            "/muraon - attiva l'upgrade automatico mura a fine sessione\n"
+            "/muraoff - disattiva l'upgrade automatico mura"
+        )
 
 
 # Controllo periodico che il bot non sia "sparito" senza che nessuno se ne
@@ -149,9 +289,15 @@ def main():
 
     try:
         tg_call("setMyCommands", {"commands": [
+            {"command": "menu", "description": "Torna alla scelta villaggio"},
+            {"command": "villaggio1", "description": "Passa al Villaggio Principale"},
+            {"command": "villaggio2", "description": "Passa al Villaggio Secondario"},
             {"command": "avvia", "description": "Sveglia il PC e avvia il bot"},
             {"command": "stato", "description": "Controlla se il bot sta girando"},
             {"command": "stop", "description": "Ferma il bot"},
+            {"command": "schermo", "description": "Manda uno screenshot dell'emulatore"},
+            {"command": "muraon", "description": "Attiva l'upgrade automatico mura a fine sessione"},
+            {"command": "muraoff", "description": "Disattiva l'upgrade automatico mura"},
         ]})
     except Exception as e:
         print(f"[RELAY] Errore setMyCommands: {e}")
@@ -165,7 +311,8 @@ def main():
         print(f"[RELAY] Errore lettura backlog iniziale: {e}")
 
     print(f"[RELAY] Pronto, offset iniziale {offset}. In ascolto...")
-    send_message("🤖 Relay pronto. Usa i pulsanti qui sotto.")
+    _state["village"] = "primario"
+    send_message("🤖 Relay pronto. Scegli un villaggio:", keyboard=TOP_MENU_KEYBOARD)
 
     last_watchdog_check = time.time()
 
