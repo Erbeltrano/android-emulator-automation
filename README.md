@@ -1,6 +1,6 @@
 # OCR Bot — Clash of Clans (headless via ADB)
 
-**Versione:** 3.2 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+**Versione:** 3.3 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
 
 Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
@@ -33,6 +33,8 @@ Ad ogni ciclo (`run_attack()`):
 **v3.1**: fine battaglia adattiva invece di un'attesa fissa. L'utente ha notato dal vivo che spesso le truppe muoiono quasi subito e il bot restava a "fissare il vuoto" per un minuto o più prima di terminare. `wait_for_battle_end()` ora legge la percentuale di "Danno complessivo" (nuova `OCR_REGION_DAMAGE`, basso a destra) ogni 5s: se non sale per `DAMAGE_STALL_SECONDS` termina subito, se arriva al 100% anche. Nota tecnica sull'OCR: con la whitelist solo-cifre già usata per le risorse, Tesseract forzava il simbolo "%" a diventare la cifra più simile (es. "36%" letto come "365") invece di ignorarlo — risolto includendo "%" nella whitelist e usando `psm 7` (unica modalità testata affidabile sia su numeri a una cifra "2%" che a due "36%" su questo font), poi scartando il simbolo dal risultato.
 
 **v3.2**: `DAMAGE_STALL_SECONDS` alzato da `15.0` a `20.0` — l'utente ha visto dal vivo la battaglia terminare in anticipo con truppe ancora vive: la % di danno può restare ferma diversi secondi per pause normali di combattimento (un'unità che rosicchia un muro, un eroe che cammina tra un edificio e l'altro), non solo perché le truppe sono morte. Se il falso positivo si ripresenta, il valore da alzare ulteriormente è questo.
+
+**v3.3**: `DAMAGE_POLL_INTERVAL` abbassato da `5.0` a `2.0` — con un controllo ogni 5s l'ultimo aumento di danno rilevato poteva essere fino a 5s più vecchio di quando succedeva davvero (si controlla solo a intervalli, non in continuo), facendo scattare lo stallo prima di quanto sembrasse guardando lo schermo. Un controllo più frequente riduce questo ritardo nascosto.
 
 `debug.png` viene sovrascritto ad ogni lettura OCR del bottino con l'immagine post-elaborazione: utile per capire se Tesseract sta leggendo bene la zona giusta.
 

@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.2"
+VERSION = "3.3"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -502,7 +502,10 @@ BATTLE_DURATION_WAIT = (45.0, 120.0)  # v3.1: il minimo non e' piu' usato per un
 # invariata per DAMAGE_STALL_SECONDS, le truppe sono verosimilmente morte o
 # ferme (nessun altro danno in arrivo) e si termina subito, invece di
 # aspettare il tetto massimo.
-DAMAGE_POLL_INTERVAL = 5.0   # secondi tra una lettura OCR del danno e l'altra
+DAMAGE_POLL_INTERVAL = 2.0   # abbassato da 5.0 il 2026-07-29: con un controllo ogni 5s
+                              # l'ultimo aumento rilevato poteva essere fino a 5s piu'
+                              # vecchio di quando succedeva davvero, facendo scattare lo
+                              # stallo prima di quanto sembrasse guardando lo schermo
 DAMAGE_STALL_SECONDS = 20.0  # alzato da 15.0 il 2026-07-29: l'utente ha visto dal vivo
                               # la battaglia terminare in anticipo con truppe ancora vive
                               # (pause normali di combattimento - es. un P.E.K.K.A. che
