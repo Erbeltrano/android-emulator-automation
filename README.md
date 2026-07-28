@@ -1,6 +1,6 @@
 # OCR Bot — Clash of Clans (headless via ADB)
 
-**Versione:** 3.4 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+**Versione:** 3.5 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
 
 Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
@@ -37,6 +37,8 @@ Ad ogni ciclo (`run_attack()`):
 **v3.3**: `DAMAGE_POLL_INTERVAL` abbassato da `5.0` a `2.0` — con un controllo ogni 5s l'ultimo aumento di danno rilevato poteva essere fino a 5s più vecchio di quando succedeva davvero (si controlla solo a intervalli, non in continuo), facendo scattare lo stallo prima di quanto sembrasse guardando lo schermo. Un controllo più frequente riduce questo ritardo nascosto.
 
 **v3.4**: `DAMAGE_STALL_SECONDS` alzato ulteriormente da `20.0` a `25.0` su richiesta dell'utente.
+
+**v3.5**: bug fix in `wait_for_battle_end()` — due letture OCR fallite di fila (es. l'effetto grafico del fulmine dei draghi elettrici copre il numero del danno per un paio di secondi) facevano terminare subito la battaglia, scambiando l'effetto visivo temporaneo per prova che fosse già finita. Ora una lettura fallita conta solo come "nessun nuovo danno visto in questo istante": il cronometro dei 25s si basa esclusivamente sull'ultima lettura riuscita, non su quante letture falliscono di fila.
 
 `debug.png` viene sovrascritto ad ogni lettura OCR del bottino con l'immagine post-elaborazione: utile per capire se Tesseract sta leggendo bene la zona giusta.
 

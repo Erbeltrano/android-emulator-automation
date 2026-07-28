@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.4"
+VERSION = "3.5"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -1488,28 +1488,25 @@ def wait_for_battle_end():
         value = read_battle_damage()
         now = time.monotonic()
 
-        if value is None:
-            # Schermata cambiata (es. gia' tornati al villaggio) o un frame
-            # sfortunato: un secondo controllo evita di terminare per un
-            # singolo errore di lettura.
-            print("[WAIT] Danno non leggibile, ricontrollo prima di decidere...")
-            time.sleep(DAMAGE_POLL_INTERVAL)
-            if read_battle_damage() is None:
-                print("[WAIT] Ancora non leggibile, termino (probabile fine battaglia già in corso).")
+        if value is not None:
+            if last_value is None or value > last_value:
+                last_value = value
+                last_change_at = now
+            if value >= 100:
+                print("[WAIT] Danno al 100%, termino subito.")
                 return
-            continue
-
-        if last_value is None or value > last_value:
-            last_value = value
-            last_change_at = now
-
-        if value >= 100:
-            print("[WAIT] Danno al 100%, termino subito.")
-            return
+        # Una lettura fallita (value is None - es. l'effetto grafico del
+        # fulmine dei draghi elettrici copre il numero per un paio di
+        # secondi, o un frame sfortunato) NON aggiorna last_change_at: conta
+        # come "nessun nuovo danno visto in questo istante", non come prova
+        # che la battaglia sia gia' finita. Bug trovato dal vivo il
+        # 2026-07-29: la versione precedente terminava subito dopo due
+        # letture fallite di fila (~4s), scambiando un effetto grafico
+        # temporaneo per fine battaglia con truppe ancora vive e attive.
 
         stalled_for = now - last_change_at
         if stalled_for >= DAMAGE_STALL_SECONDS:
-            print(f"[WAIT] Danno fermo al {last_value}% da {stalled_for:.0f}s (truppe esaurite), termino in anticipo.")
+            print(f"[WAIT] Danno fermo (ultimo letto: {last_value}) da {stalled_for:.0f}s, termino.")
             return
 
         time.sleep(DAMAGE_POLL_INTERVAL)
