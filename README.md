@@ -1,6 +1,6 @@
 # OCR Bot — Clash of Clans (headless via ADB)
 
-**Versione:** 2.8 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+**Versione:** 3.0 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
 
 Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
@@ -26,7 +26,9 @@ Ad ogni ciclo (`run_attack()`):
 
 ### Stato noto del piazzamento
 
-Il pool di coordinate di schieramento è quello storico, già validato in precedenza e ripristinato dopo un tentativo di usare solo punti ancora più esterni. In alcune basi il gioco può ancora ignorare parte dei tap di deploy: è un problema aperto di calibrazione, non risolto dalla sola velocizzazione. Servirà un nuovo test mirato con screenshot della battaglia e griglia di riferimento prima di cambiare di nuovo i punti in modo definitivo.
+**v2.9**: `DEPLOY_POINTS` ricalibrato da zero col "metodo della griglia" (già usato per `secondo_villaggio`): screenshot di una battaglia reale con overlay a celle 160px, l'utente ha indicato a mano la diagonale del bordo esterno valido di quella base (da cella K1 a G5). I 18 punti attuali sono equispaziati lungo quella diagonale e sostituiscono per intero il vecchio pool sparso (due diagonali diverse assemblate alla cieca in sessioni precedenti, che davano danni bassi con messaggi "Non puoi schierare truppe nella zona rossa"). Da verificare su più basi diverse: se emerge che questa singola diagonale non generalizza, ripetere il metodo della griglia su quella base piuttosto che tornare ad aggiungere punti a caso.
+
+**v3.0**: `BATTLE_START_MAX_WAIT` riportato da `40.0` a `4.0` su richiesta esplicita dell'utente — secondo la sua osservazione dal vivo il piazzamento funziona comunque durante il countdown di matchmaking, quindi il valore alto non sarebbe la spiegazione corretta del bug del 2026-07-28. Da monitorare: se ricompaiono pochi tap a segno/0% danno, il sospetto principale resta questo valore.
 
 `debug.png` viene sovrascritto ad ogni lettura OCR del bottino con l'immagine post-elaborazione: utile per capire se Tesseract sta leggendo bene la zona giusta.
 

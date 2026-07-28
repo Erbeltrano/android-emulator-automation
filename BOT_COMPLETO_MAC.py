@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "2.8"
+VERSION = "3.0"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -320,40 +320,22 @@ TROOP_SLOTS = [
 HERO_SLOTS = [483, 626, 785, 928]
 
 # Zona di schieramento: tutte le truppe vengono piazzate qui, in un unico
-# passaggio. Questi punti non sono generici: sono calibrati apposta sul
-# bordo PIU' ESTERNO del campo di battaglia (il confine della mappa, non
-# il perimetro della base), cosi' la zona rossa - che dipende dalle mura
-# ed edifici di ogni singola base - non li tocca mai, qualunque sia la
-# base incontrata (quella testata con successo: 93% danno, 2 stelle).
-# Un tentativo di spostarli "al buio" piu' lontano dal bordo per un
-# problema di zona rossa segnalato su una base specifica si e' rivelato
-# un errore: alcuni punti finivano fuori dall'area valida. Tornati alle
-# coordinate originali.
+# passaggio. Ricalibrati il 2026-07-28 col "metodo della griglia" (overlay
+# a celle 160px su uno screenshot di battaglia reale, con conferma dal vivo
+# del bug: "Non puoi schierare truppe nella zona rossa" e solo 2% di danno
+# con la vecchia lista sparsa). L'utente ha indicato a mano, disegnando
+# sull'overlay, la diagonale del bordo esterno valido per QUELLA base
+# (da cella K1 a cella G5, cioe' pixel (1736,300)->(1104,864)): questi 18
+# punti sono equispaziati lungo quella diagonale. Sostituiscono per intero
+# il vecchio pool sparso (due diagonali diverse + punti aggiunti alla
+# cieca) su richiesta esplicita dell'utente, per non diluire nello shuffle
+# casuale l'effetto della calibrazione precisa appena fatta. Se emergono
+# basi dove questa diagonola non basta, ripetere il metodo della griglia
+# invece di aggiungere punti a caso.
 DEPLOY_POINTS = [
-    (1300, 550), (1350, 500), (1400, 450), (1450, 400), (1500, 350), (1550, 300),
-    (1600, 250), (1650, 200),  # continuano la stessa diagonale verso l'alto
-    (1400, 600), (1350, 650), (1300, 700), (1250, 720), (1200, 740),
-    (1150, 760), (1100, 780), (1050, 800), (1000, 820),
-    # Aggiunti il 2026-07-28 dopo un problema segnalato dal vivo dall'utente:
-    # su basi molto grandi/con camera molto zoomata, la diagonale sopra resta
-    # dentro la zona rossa quasi ovunque (lo zoom non e' regolabile via ADB -
-    # ne' da tastiera/mouse via SSH per l'isolamento delle window station di
-    # Windows, ne' via pizzico multitouch raw: il device "BlueStacks Virtual
-    # Touch" espone solo ABS_MT_POSITION_X/Y senza ABS_MT_SLOT, quindi non
-    # sa rappresentare due tocchi simultanei - un vero pinch-to-zoom non e'
-    # possibile a questo livello, non e' un problema di sintassi del comando).
-    # Questi punti, piu' bassi e verso l'angolo destro dello schermo (zona
-    # erba/alberi oltre il bordo della base su schermate di battaglia reali),
-    # sono stati confermati dal vivo: 9 tap su 10 andati a segno (compresi i
-    # piu' estremi) su una base diversa da quelle usate per calibrare i punti
-    # sopra. Aggiunti in coda invece di sostituire i precedenti - un
-    # tentativo passato di spostare l'intera lista piu' lontano dal bordo
-    # "al buio" (senza verifica dal vivo) aveva invece finito fuori
-    # dall'area valida su altre basi (vedi commento sopra), quindi qui si
-    # amplia il pool di punti tra cui pescare invece di rimpiazzarlo.
-    (1450, 700), (1550, 750), (1650, 800), (1500, 850), (1350, 700),
-    (1500, 700), (1600, 750), (1700, 800), (1550, 900), (1400, 750),
-    (1450, 800), (1600, 850),
+    (1736, 300), (1699, 333), (1662, 366), (1625, 400), (1587, 433), (1550, 466),
+    (1513, 499), (1476, 532), (1439, 565), (1401, 599), (1364, 632), (1327, 665),
+    (1290, 698), (1253, 731), (1216, 765), (1178, 798), (1141, 831), (1104, 864),
 ]
 
 # Gli eroi usavano un unico punto fisso (1350, 550): su alcune basi quel
@@ -479,33 +461,23 @@ _config = load_config()
 MAX_SKIP_ATTEMPTS = 15       # avversari da scartare al massimo prima di attaccare comunque
 CLICK_INTERVAL_RANGE = (0.08, 0.14)  # intervallo breve e variabile: accelera il deploy
                                       # senza togliere a BlueStacks il tempo di registrare ogni tap
-BATTLE_START_MAX_WAIT = 40.0  # durata massima del countdown di matchmaking: dopo lo scouting
-                               # si attende solo la parte ancora rimanente. Bug trovato e
-                               # fixato il 2026-07-28: il valore era rimasto a 2.0 fin dalla
-                               # riscrittura ADB (commit b5bdf6b), in contraddizione con il
-                               # docstring di wait_for_battle_start() che descrive proprio
-                               # questa attesa fissa. Quando lo scouting accetta il primo
-                               # avversario trovato (bottino sopra soglia, l'uscita più comune
-                               # dal loop), il countdown non e' ancora consumato: con 2.0s
-                               # deploy_army() iniziava a schierare mentre la battaglia non era
-                               # ancora davvero iniziata, e i tap nella finestra "morta" del
-                               # countdown non hanno alcun effetto - da qui il sintomo osservato
-                               # in produzione (2-3 truppe schierate invece di 10).
+BATTLE_START_MAX_WAIT = 4.0  # riportato a un'attesa breve il 2026-07-29 su richiesta esplicita
+                               # dell'utente, dopo aver rivisto dal vivo la v2.9 (countdown pieno
+                               # a 40s): secondo l'utente il piazzamento funziona comunque durante
+                               # il countdown di matchmaking, il problema del 2026-07-28 (vedi
+                               # storia sotto) sarebbe stato causato da altro, non dal countdown.
+                               # CONFERMATO in produzione lo stesso giorno (utente presente
+                               # davanti allo schermo, live): funziona "alla perfezione" con 4.0.
+                               # La spiegazione "finestra morta del countdown" del 2026-07-28 era
+                               # quindi sbagliata o incompleta (il vero fix di quel giorno era
+                               # probabilmente la ricalibrazione di DEPLOY_POINTS in v2.9, non
+                               # l'attesa lunga). Non ripristinare 30-40s per questo motivo.
                                #
-                               # Portato prima a 30.0 (durata del countdown osservata dal vivo
-                               # via ADB manuale: 24-28s), poi a 40.0 dopo un test in produzione
-                               # reale lo stesso giorno che ha mostrato risultati incoerenti con
-                               # 30.0 (attacco 1: 0 truppe/0% danno, attacco 2: 0 truppe/0%
-                               # danno, attacco 3: 4/10 truppe/21% danno) - il countdown reale
-                               # a quanto pare non è sempre 28-30s netti, e con un'attesa al
-                               # limite anche solo i primi tap di deploy_army() (che impiega
-                               # circa 10-15s a schierare tutto) rischiano di cadere ancora
-                               # nella finestra morta, spiegando sia il fallimento totale che
-                               # quello parziale (i tap piu' tardivi nel giro, quando il tempo
-                               # reale trascorso supera finalmente il countdown, vanno a segno).
-                               # Nessuna modifica a DEPLOY_POINTS/TROOP_SLOTS/HERO_SLOTS: si sono
-                               # dimostrati corretti quando il timing e' sufficiente (confermato
-                               # sia a mano - 9/10 - sia in produzione).
+                               # Storia (per contesto, non piu' la spiegazione accettata): era
+                               # 2.0 fin dalla riscrittura ADB (commit b5bdf6b), portato a 30.0
+                               # poi 40.0 il 2026-07-28 dopo aver osservato "2-3 truppe invece di
+                               # 10"/0% danno con l'ipotesi che i tap di deploy cadessero in una
+                               # finestra morta prima della fine reale del countdown.
 BATTLE_DURATION_WAIT = (45.0, 120.0)  # attesa (min, max) prima di terminare la battaglia da soli
                                        # (range allargato in v1.8, la battaglia dura al massimo
                                        # 3 minuti quindi c'e' margine per piu' variazione)
