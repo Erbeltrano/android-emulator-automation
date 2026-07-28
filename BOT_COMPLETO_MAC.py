@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.0"
+VERSION = "3.1"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -261,6 +261,18 @@ OCR_REGION_DARK_ELIXIR = {
     "height": 30,
 }
 
+# "Danno complessivo N%" durante la battaglia (basso a destra), calibrata
+# dal vivo su screenshot reali sia con "2%" che con "36%" (il testo è
+# allineato a destra, quindi una regione larga copre anche "100%"). Usata
+# in v3.1 per capire quando le truppe sono morte/ferme invece di aspettare
+# sempre un tempo fisso a schermo vuoto (vedi wait_for_battle_end()).
+OCR_REGION_DAMAGE = {
+    "left": 1650,
+    "top": 775,
+    "width": 270,
+    "height": 60,
+}
+
 # Regioni delle risorse in casa (barra in alto a destra nel villaggio),
 # usate per capire quale risorsa scarseggia di più prima di iniziare a
 # farmare. Calibrate dal vivo (screenshot 1920x1080 su BlueStacks).
@@ -478,9 +490,23 @@ BATTLE_START_MAX_WAIT = 4.0  # riportato a un'attesa breve il 2026-07-29 su rich
                                # poi 40.0 il 2026-07-28 dopo aver osservato "2-3 truppe invece di
                                # 10"/0% danno con l'ipotesi che i tap di deploy cadessero in una
                                # finestra morta prima della fine reale del countdown.
-BATTLE_DURATION_WAIT = (45.0, 120.0)  # attesa (min, max) prima di terminare la battaglia da soli
-                                       # (range allargato in v1.8, la battaglia dura al massimo
-                                       # 3 minuti quindi c'e' margine per piu' variazione)
+BATTLE_DURATION_WAIT = (45.0, 120.0)  # v3.1: il minimo non e' piu' usato per un'attesa fissa
+                                       # (vedi wait_for_battle_end() sotto), resta solo il
+                                       # massimo come tetto di sicurezza se l'OCR del danno
+                                       # smette di funzionare.
+
+# v3.1: invece di aspettare sempre un tempo fisso/casuale a schermo fermo
+# (l'utente ha notato dal vivo che spesso le truppe muoiono quasi subito e
+# il bot resta a "fissare il vuoto" per un minuto o piu'), si legge la
+# percentuale di "Danno complessivo" a intervalli regolari: se resta
+# invariata per DAMAGE_STALL_SECONDS, le truppe sono verosimilmente morte o
+# ferme (nessun altro danno in arrivo) e si termina subito, invece di
+# aspettare il tetto massimo.
+DAMAGE_POLL_INTERVAL = 5.0   # secondi tra una lettura OCR del danno e l'altra
+DAMAGE_STALL_SECONDS = 15.0  # danno fermo per cosi' tanto -> si considera finita
+DAMAGE_GRACE_PERIOD = 10.0   # subito dopo lo schieramento le truppe stanno ancora
+                              # marciando verso la base: non giudicare uno stallo
+                              # prima che sia passato questo tempo
 
 SESSION_DURATION = _config["session_duration_minutes"] * 60
 MAX_TRIGGERS = _config["max_triggers"]         # numero di attacchi dopo cui il bot si ferma da solo
@@ -687,6 +713,42 @@ def read_available_resources():
         "elixir": _ocr_region_to_int(frame, OCR_REGION_ELIXIR, "elixir"),
         "dark_elixir": _ocr_region_to_int(frame, OCR_REGION_DARK_ELIXIR, "dark_elixir"),
     }
+
+
+def read_battle_damage():
+    """Legge la percentuale di "Danno complessivo" mostrata durante la
+    battaglia (basso a destra). Ritorna None se l'OCR non trova nulla
+    (es. schermata cambiata, popup sopra, ecc.) - il chiamante deve
+    gestire il caso in modo sicuro, non assumere che sia sempre leggibile.
+
+    Non riusa `_ocr_region_to_int()` (quella e' per numeri con separatore
+    delle migliaia, whitelist solo cifre): qui il testo e' "N%", e con
+    whitelist solo-cifre Tesseract forza comunque il simbolo "%" a
+    diventare la cifra piu' simile (visto dal vivo: "36%" letto come
+    "365") invece di ignorarlo. Whitelist con "%" incluso + psm 7 (singola
+    riga, l'unica modalita' testata che legge in modo affidabile sia "2%"
+    che "36%" su questo font) risolve; il simbolo va poi scartato a mano.
+    """
+    frame = adb_screenshot()
+    l, t = OCR_REGION_DAMAGE["left"], OCR_REGION_DAMAGE["top"]
+    w, h = OCR_REGION_DAMAGE["width"], OCR_REGION_DAMAGE["height"]
+    crop = frame[t:t + h, l:l + w]
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([0, 0, 180]), np.array([180, 60, 255]))
+    mask = cv2.resize(mask, None, fx=5.0, fy=5.0, interpolation=cv2.INTER_CUBIC)
+    mask = cv2.copyMakeBorder(mask, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=0)
+    cv2.imwrite("debug_damage.png", mask)
+
+    ocr_config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789%"
+    text = pytesseract.image_to_string(mask, config=ocr_config)
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
 
 
 def read_home_resources():
@@ -1399,6 +1461,54 @@ def maybe_hesitate(chance=0.25, pause_range=(2.0, 6.0)):
         time.sleep(pause)
 
 
+def wait_for_battle_end():
+    """Aspetta che la battaglia finisca leggendo periodicamente il "Danno
+    complessivo": se non sale per DAMAGE_STALL_SECONDS le truppe sono
+    verosimilmente morte/ferme e si termina subito, invece di aspettare
+    sempre il tetto massimo fisso (comportamento fino alla v3.0). Il tetto
+    massimo (BATTLE_DURATION_WAIT[1]) resta come rete di sicurezza se
+    l'OCR smette di leggere il danno per qualche motivo.
+    """
+    _, max_wait = BATTLE_DURATION_WAIT
+    started_at = time.monotonic()
+    last_value = None
+    last_change_at = started_at
+
+    time.sleep(DAMAGE_GRACE_PERIOD)
+
+    while time.monotonic() - started_at < max_wait:
+        value = read_battle_damage()
+        now = time.monotonic()
+
+        if value is None:
+            # Schermata cambiata (es. gia' tornati al villaggio) o un frame
+            # sfortunato: un secondo controllo evita di terminare per un
+            # singolo errore di lettura.
+            print("[WAIT] Danno non leggibile, ricontrollo prima di decidere...")
+            time.sleep(DAMAGE_POLL_INTERVAL)
+            if read_battle_damage() is None:
+                print("[WAIT] Ancora non leggibile, termino (probabile fine battaglia già in corso).")
+                return
+            continue
+
+        if last_value is None or value > last_value:
+            last_value = value
+            last_change_at = now
+
+        if value >= 100:
+            print("[WAIT] Danno al 100%, termino subito.")
+            return
+
+        stalled_for = now - last_change_at
+        if stalled_for >= DAMAGE_STALL_SECONDS:
+            print(f"[WAIT] Danno fermo al {last_value}% da {stalled_for:.0f}s (truppe esaurite), termino in anticipo.")
+            return
+
+        time.sleep(DAMAGE_POLL_INTERVAL)
+
+    print(f"[WAIT] Tetto massimo di {max_wait:.0f}s raggiunto, termino comunque.")
+
+
 def run_attack():
     """Un ciclo completo: cerca avversario, valuta, attacca, aspetta la
     fine della battaglia, torna al villaggio. Ogni fase verifica lo stato
@@ -1458,9 +1568,7 @@ def run_attack():
     maybe_hesitate(chance=0.2, pause_range=(1.5, 4.0))
     deploy_army()
 
-    wait_time = random.uniform(*BATTLE_DURATION_WAIT)
-    print(f"[WAIT] Aspetto ~{wait_time:.0f}s (tempo casuale, per sembrare più umano) prima di terminare...")
-    time.sleep(wait_time)
+    wait_for_battle_end()
 
     print("[ACTION] Termino la battaglia...")
     adb_tap(*END_BATTLE_BUTTON)

@@ -1,6 +1,6 @@
 # OCR Bot — Clash of Clans (headless via ADB)
 
-**Versione:** 3.0 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+**Versione:** 3.1 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
 
 Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
 
@@ -17,7 +17,7 @@ Ad ogni ciclo (`run_attack()`):
    - Se è sopra `THRESHOLD` (default 800.000): procede e aspetta l'inizio della battaglia.
    - Se è sotto soglia: tocca "Avanti" per cercare un altro avversario, fino a `MAX_SKIP_ATTEMPTS` tentativi.
 3. Appena la battaglia inizia, schiera **tutte** le truppe e gli eroi disponibili in un unico passaggio, sempre nella stessa zona della mappa (lato destro/basso — quella testata con successo: 93% danno, 2 stelle), poi attiva le abilità degli eroi.
-4. Aspetta che la battaglia si svolga (tempo casuale tra `BATTLE_DURATION_WAIT`), poi torna al villaggio.
+4. Aspetta che la battaglia finisca leggendo via OCR la percentuale di "Danno complessivo" ogni `DAMAGE_POLL_INTERVAL` secondi (`wait_for_battle_end()`, v3.1): se resta ferma per `DAMAGE_STALL_SECONDS` (truppe morte/esaurite, nessun altro danno in arrivo) termina subito invece di aspettare un tempo fisso a schermo fermo. `BATTLE_DURATION_WAIT[1]` resta come tetto massimo di sicurezza se l'OCR del danno smette di funzionare. Poi torna al villaggio.
 5. Ripete finché i depositi di oro ed elisir in casa non sono quasi pieni (letto dal vivo tramite il tooltip "Max" della barra risorse, non un valore fisso), poi si ferma da solo. `MAX_TRIGGERS` attacchi / `SESSION_DURATION` (default 50 minuti) restano come tetto di sicurezza se la lettura della capacità dei depositi dovesse fallire.
 6. Se il flag `auto_wall_upgrade` è attivo (dashboard o `/muraon` su Telegram) e c'è un costruttore libero, a fine sessione mette in coda l'upgrade di quante più mura possibile con le risorse rimaste in casa (pagando con la valuta più abbondante, un muro alla volta). Se il flusso non riesce a completare nessun upgrade (es. un rilevamento UI fallito), manda un avviso Telegram invece di fermarsi in silenzio con i depositi ancora pieni.
 7. I comandi ADB di base (tap, swipe, screenshot) ritentano automaticamente in caso di intoppo transitorio (tipico subito dopo un risveglio a freddo via Wake-on-LAN): un singolo hiccup non conta più come un errore verso il limite di 3 errori consecutivi che ferma la sessione.
@@ -29,6 +29,8 @@ Ad ogni ciclo (`run_attack()`):
 **v2.9**: `DEPLOY_POINTS` ricalibrato da zero col "metodo della griglia" (già usato per `secondo_villaggio`): screenshot di una battaglia reale con overlay a celle 160px, l'utente ha indicato a mano la diagonale del bordo esterno valido di quella base (da cella K1 a G5). I 18 punti attuali sono equispaziati lungo quella diagonale e sostituiscono per intero il vecchio pool sparso (due diagonali diverse assemblate alla cieca in sessioni precedenti, che davano danni bassi con messaggi "Non puoi schierare truppe nella zona rossa"). Da verificare su più basi diverse: se emerge che questa singola diagonale non generalizza, ripetere il metodo della griglia su quella base piuttosto che tornare ad aggiungere punti a caso.
 
 **v3.0**: `BATTLE_START_MAX_WAIT` riportato da `40.0` a `4.0` su richiesta esplicita dell'utente — secondo la sua osservazione dal vivo il piazzamento funziona comunque durante il countdown di matchmaking, quindi il valore alto non sarebbe la spiegazione corretta del bug del 2026-07-28. Da monitorare: se ricompaiono pochi tap a segno/0% danno, il sospetto principale resta questo valore.
+
+**v3.1**: fine battaglia adattiva invece di un'attesa fissa. L'utente ha notato dal vivo che spesso le truppe muoiono quasi subito e il bot restava a "fissare il vuoto" per un minuto o più prima di terminare. `wait_for_battle_end()` ora legge la percentuale di "Danno complessivo" (nuova `OCR_REGION_DAMAGE`, basso a destra) ogni 5s: se non sale per 15s termina subito, se arriva al 100% anche. Nota tecnica sull'OCR: con la whitelist solo-cifre già usata per le risorse, Tesseract forzava il simbolo "%" a diventare la cifra più simile (es. "36%" letto come "365") invece di ignorarlo — risolto includendo "%" nella whitelist e usando `psm 7` (unica modalità testata affidabile sia su numeri a una cifra "2%" che a due "36%" su questo font), poi scartando il simbolo dal risultato.
 
 `debug.png` viene sovrascritto ad ogni lettura OCR del bottino con l'immagine post-elaborazione: utile per capire se Tesseract sta leggendo bene la zona giusta.
 
