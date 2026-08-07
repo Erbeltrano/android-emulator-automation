@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.5"
+VERSION = "3.12"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -450,7 +450,7 @@ _CONFIG_DEFAULTS = {
     "threshold_dark_elixir": 3000,
     "home_low_gold": 300000,
     "home_low_elixir": 300000,
-    "home_low_dark_elixir": 1500,
+    "home_low_dark_elixir": 400000,
     "max_triggers": 20,
     "session_duration_minutes": 50,
     "auto_wall_upgrade": False,
@@ -632,12 +632,107 @@ def is_home_screen():
 
     Richiede due letture concordi a distanza di tempo per evitare falsi
     positivi durante i fotogrammi di transizione tra una schermata e
-    l'altra (es. subito dopo aver toccato 'Avanti').
+    l'altra (es. subito dopo aver toccato 'Avanti'). Funziona identico su
+    entrambi i villaggi (verificato dal vivo: R-B ~140 sul pulsante
+    "Attacco!" sia nel primario che nel Villaggio Costruttori).
     """
     if not _home_pixel_says_home():
         return False
     time.sleep(0.4)
     return _home_pixel_says_home()
+
+
+# Cambio villaggio (v3.6): Clash of Clans resta sull'ultimo villaggio
+# visitato tra un avvio e l'altro (primario o Villaggio Costruttori) - se
+# l'utente (o una sessione precedente del bot del Villaggio Costruttori) ha
+# lasciato aperto il villaggio sbagliato, questo bot partirebbe alla cieca
+# usando le proprie coordinate sullo schermo sbagliato. Calibrato dal vivo
+# il 2026-07-30 con screenshot reali (non a occhio):
+# - Dal Villaggio Costruttori la barca di ritorno è semi-coperta dalla barra
+#   risorse in alto a destra nella vista di default: un tap diretto lì apre
+#   per sbaglio il tooltip "Max: N" della barra elisir (stesso comportamento
+#   di ELIXIR_BAR_POINT) invece di toccare la barca. Serve prima un pan
+#   della camera per portarla in una zona libera, poi toccarla lì.
+#
+# v3.8 (2026-08-04): stesso problema scoperto anche nella direzione
+# opposta. BOAT_TO_BUILDER_POINT era tarato come "badge fisso sull'acqua,
+# tap diretto" - ma un nuovo badge dell'evento stagionale ("Scheda degli
+# incarichi", icona con countdown "27g 12h", non presente al momento della
+# calibrazione originale) si è aggiunto sopra quel punto esatto della UI,
+# intercettando il tap prima che arrivasse alla barca sottostante:
+# switch_to_village("costruttore") falliva sempre (2 tentativi, "Cambio
+# fallito"), verificato dal vivo. Fix: stesso schema pan+tap già usato per
+# il tragitto di ritorno. Nuove coordinate confermate dal vivo.
+BOAT_TO_BUILDER_PAN = ((1300, 700), (1650, 260))  # pan per rivelare la barca (villaggio primario)
+BOAT_TO_BUILDER_POINT = (830, 390)                # barca per il Villaggio Costruttori, dopo il pan
+BOAT_TO_PRIMARY_PAN = ((1400, 300), (700, 700))   # pan per rivelare la barca di ritorno
+BOAT_TO_PRIMARY_POINT = (1670, 730)               # barca di ritorno, dopo il pan (ricalibrato 2026-08-04:
+                                                   # 1598,580 non cadeva più sulla barca dopo il pan - la
+                                                   # base/scenario del Villaggio Costruttori è cambiato dal
+                                                   # 2026-07-30, non un badge stavolta ma la barca stessa
+                                                   # ferma in un punto diverso dopo lo stesso pan)
+
+# Distingue i due villaggi guardando il colore medio di una striscia in
+# alto, fuori da qualsiasi edificio/HUD: verde (erba, canale G nettamente
+# sopra il canale B) nel villaggio primario, blu/teal (roccia notturna,
+# B sopra G) nel Villaggio Costruttori. Calibrato su screenshot reali di
+# entrambi (G-B ~ +70 primario, ~ -13 costruttore su questa striscia).
+VILLAGE_CHECK_REGION = {"left": 600, "top": 0, "width": 700, "height": 15}
+VILLAGE_CHECK_GB_THRESHOLD = 20
+
+
+def detect_village_type(frame=None):
+    """Ritorna 'primario' o 'costruttore' guardando lo schermo attuale.
+    Presuppone di essere già su una schermata home (villaggio primario o
+    Villaggio Costruttori) - il risultato non ha senso durante
+    scouting/battaglia.
+    """
+    if frame is None:
+        frame = adb_screenshot()
+    l, t = VILLAGE_CHECK_REGION["left"], VILLAGE_CHECK_REGION["top"]
+    w, h = VILLAGE_CHECK_REGION["width"], VILLAGE_CHECK_REGION["height"]
+    crop = frame[t:t + h, l:l + w].astype(np.int32)
+    b_mean = crop[:, :, 0].mean()
+    g_mean = crop[:, :, 1].mean()
+    return "primario" if (g_mean - b_mean) > VILLAGE_CHECK_GB_THRESHOLD else "costruttore"
+
+
+def switch_to_village(target, max_attempts=2):
+    """Se non siamo già sul villaggio `target` ('primario' o 'costruttore'),
+    tocca la barca per passarci. Va chiamata solo quando is_home_screen() è
+    già True - non gestisce stati intermedi (scouting/battaglia).
+    """
+    for attempt in range(max_attempts):
+        current = detect_village_type()
+        if current == target:
+            if attempt > 0:
+                print(f"[VILLAGGIO] Ora siamo su '{target}'.")
+            return True
+
+        print(f"[VILLAGGIO] Siamo su '{current}', serve '{target}': tocco la barca...")
+        if target == "costruttore":
+            adb_swipe(BOAT_TO_BUILDER_PAN[0][0], BOAT_TO_BUILDER_PAN[0][1],
+                      BOAT_TO_BUILDER_PAN[1][0], BOAT_TO_BUILDER_PAN[1][1])
+            time.sleep(0.8)
+            adb_tap(*BOAT_TO_BUILDER_POINT)
+        else:
+            adb_swipe(BOAT_TO_PRIMARY_PAN[0][0], BOAT_TO_PRIMARY_PAN[0][1],
+                      BOAT_TO_PRIMARY_PAN[1][0], BOAT_TO_PRIMARY_PAN[1][1])
+            time.sleep(0.8)
+            adb_tap(*BOAT_TO_PRIMARY_POINT)
+        time.sleep(4.0)
+
+    # v3.9: il controllo veniva fatto solo PRIMA di ogni tap, mai dopo
+    # l'ultimo - scoperto dal vivo il 2026-08-04: il cambio a volte riesce
+    # solo al secondo tentativo (es. il primo tap arriva mentre la barca
+    # non ha ancora finito un'animazione), ma la funzione tornava comunque
+    # False perché il ciclo finiva subito dopo l'azione, senza ricontrollare.
+    if detect_village_type() == target:
+        print(f"[VILLAGGIO] Ora siamo su '{target}'.")
+        return True
+
+    print(f"[VILLAGGIO] Cambio fallito dopo {max_attempts} tentativi, siamo ancora su '{detect_village_type()}'.")
+    return False
 
 
 def _ocr_region_to_int(frame, region, debug_name):
@@ -800,25 +895,42 @@ def read_storage_max(bar_point, debug_name):
 
 def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     """True se ALMENO UNA tra oro ed elisir in casa e' oltre `threshold`
-    della propria capacita' massima (letta dal vivo, vedi read_storage_max).
-    Usato a fine sessione per decidere se continuare a farmare o fermarsi a
-    investire nelle mura: invece di un numero fisso di attacchi, si continua
-    finche' i depositi non sono davvero pieni (scelta esplicita
-    dell'utente, per non sprecare bottino che andrebbe perso perche' il
-    deposito e' gia' colmo).
+    della propria capacita' massima (letta dal vivo, vedi read_storage_max)
+    E l'elisir nero in casa e' anche lui sopra la propria soglia
+    (`home_low_dark_elixir`). Usato a fine sessione per decidere se
+    continuare a farmare o fermarsi a investire nelle mura: invece di un
+    numero fisso di attacchi, si continua finche' i depositi non sono
+    davvero pieni (scelta esplicita dell'utente, per non sprecare bottino
+    che andrebbe perso perche' il deposito e' gia' colmo).
 
-    Basta UNA valuta piena (non serve che lo siano entrambe): se l'elisir e'
-    gia' colmo ma l'oro no (es. la sessione sta dando priorita' all'oro
-    perche' scarso), continuare ad attaccare sprecherebbe comunque tutto
-    l'elisir guadagnato in ogni attacco. Meglio fermarsi subito e investire
-    quello che c'e' nelle mura (try_wall_upgrade prova comunque entrambe le
-    valute, vedi _run_wall_upgrade_round) - scoperto dal vivo il 2026-07-25:
-    con la vecchia condizione "entrambe piene" l'elisir restava sprecato
-    attacco dopo attacco in attesa che anche l'oro si riempisse.
+    Basta UNA valuta piena tra oro/elisir (non serve che lo siano
+    entrambe): se l'elisir e' gia' colmo ma l'oro no (es. la sessione sta
+    dando priorita' all'oro perche' scarso), continuare ad attaccare
+    sprecherebbe comunque tutto l'elisir guadagnato in ogni attacco. Meglio
+    fermarsi subito e investire quello che c'e' nelle mura (try_wall_upgrade
+    prova comunque entrambe le valute, vedi _run_wall_upgrade_round) -
+    scoperto dal vivo il 2026-07-25: con la vecchia condizione "entrambe
+    piene" l'elisir restava sprecato attacco dopo attacco in attesa che
+    anche l'oro si riempisse.
 
-    Se la lettura della capacita' massima fallisce (OCR/tooltip inatteso),
-    ritorna False per sicurezza: meglio affidarsi al tetto di sicurezza a
-    numero fisso di attacchi che rischiare un ciclo che non si ferma mai.
+    L'elisir nero invece e' un AND, non un OR con gli altri due: non ha una
+    capacita' massima calibrata (nessun tooltip "Max" letto per lui), quindi
+    "pieno" qui significa solo "sopra la soglia che l'utente considera
+    sufficiente" (home_low_dark_elixir, di default 400.000 - stesso campo
+    gia' usato da determine_priority_resource() per capire quando l'elisir
+    nero scarseggia, riusato qui con lo stesso significato). Bug reale
+    trovato il 2026-08-02: l'utente aveva l'elisir nero vuoto ma il bot si
+    fermava comunque non appena oro/elisir normale erano pieni, senza mai
+    dargli la possibilita' di accumularne - perche' storage_is_full()
+    ignorava del tutto l'elisir nero. Ora, se e' sotto soglia, i depositi
+    non sono mai considerati "pieni" (si continua a farmare, fino al tetto
+    di sicurezza sul numero di attacchi/durata sessione se il farming di
+    elisir nero e' lento) indipendentemente da oro/elisir.
+
+    Se la lettura della capacita' massima di oro/elisir fallisce (OCR/tooltip
+    inatteso), ritorna False per sicurezza: meglio affidarsi al tetto di
+    sicurezza a numero fisso di attacchi che rischiare un ciclo che non si
+    ferma mai.
     """
     home = read_home_resources()
     gold_max = read_storage_max(GOLD_BAR_POINT, "gold")
@@ -842,7 +954,28 @@ def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     gold_ratio = home["gold"] / gold_max
     elixir_ratio = home["elixir"] / elixir_max
     print(f"[STORAGE] Oro {home['gold']}/{gold_max} ({gold_ratio:.0%}), Elisir {home['elixir']}/{elixir_max} ({elixir_ratio:.0%}).")
-    return gold_ratio >= threshold or elixir_ratio >= threshold
+    gold_or_elixir_full = gold_ratio >= threshold or elixir_ratio >= threshold
+    if not gold_or_elixir_full:
+        return False
+
+    dark_low = _config["home_low_dark_elixir"]
+    dark_elixir = home.get("dark_elixir")
+    if dark_elixir is None:
+        # Lettura fallita: stessa scelta di sicurezza usata sopra per
+        # oro/elisir max quando la lettura non riesce - meglio continuare a
+        # farmare un altro ciclo (affidandosi al tetto di sicurezza su
+        # attacchi/durata sessione) che fermarsi per errore scambiando un
+        # intoppo OCR transitorio per "elisir nero pieno". Scoperto dal vivo
+        # il 2026-08-07: il vecchio default (True, "considera pieno") ha
+        # fatto fermare il bot dopo 7 attacchi con l'elisir nero all'84.000
+        # su 400.000 di soglia, solo perche' quella singola lettura era
+        # fallita ("lettura fantasma").
+        return False
+    print(f"[STORAGE] Elisir nero {dark_elixir}/{dark_low} (soglia minima prima di considerarmi 'pieno').")
+    if dark_elixir < dark_low:
+        print("[STORAGE] Elisir nero ancora sotto soglia, continuo a farmare anche se oro/elisir sono pieni.")
+        return False
+    return True
 
 
 def _find_text_center(frame, region, needle):
@@ -1390,6 +1523,7 @@ def find_and_evaluate_opponent():
     threshold = _config[f"threshold_{priority_resource}"]
     current_phase = "scouting"
     start = time.time()
+    any_read_succeeded = False
     for attempt in range(1, MAX_SKIP_ATTEMPTS + 1):
         time.sleep(0.5)
 
@@ -1403,6 +1537,7 @@ def find_and_evaluate_opponent():
         print(f"[SCOUT] Tentativo {attempt}/{MAX_SKIP_ATTEMPTS} - risorsa prioritaria ({priority_resource}): {loot} - tutte: {resources}")
         if any(v is not None for v in resources.values()):
             last_resources = resources
+            any_read_succeeded = True
 
         scout_progress = {
             "attempt": attempt,
@@ -1417,6 +1552,11 @@ def find_and_evaluate_opponent():
             return True
 
         if time.time() - start > SCOUT_TIME_BUDGET:
+            if not any_read_succeeded:
+                print("[SCOUT] Budget scaduto e NESSUNA lettura riuscita in tutto lo scouting - schermo probabilmente fuori calibrazione (es. zoom cambiato), non attacco alla cieca.")
+                send_telegram("⚠️ Lo scouting non riesce a leggere nessuna risorsa da diversi tentativi (schermo probabilmente fuori calibrazione, es. zoom della camera cambiato). Salto questo ciclo invece di attaccare alla cieca - controlla lo schermo.")
+                scout_progress = None
+                return False
             print("[SCOUT] Budget di tempo scouting esaurito, attacco comunque l'ultima base trovata.")
             return True
 
@@ -1424,6 +1564,11 @@ def find_and_evaluate_opponent():
         adb_tap(*SKIP_BUTTON)
         time.sleep(0.8)
 
+    if not any_read_succeeded:
+        print("[SCOUT] Limite tentativi raggiunto e NESSUNA lettura riuscita - schermo probabilmente fuori calibrazione (es. zoom cambiato), non attacco alla cieca.")
+        send_telegram("⚠️ Lo scouting non riesce a leggere nessuna risorsa da diversi tentativi (schermo probabilmente fuori calibrazione, es. zoom della camera cambiato). Salto questo ciclo invece di attaccare alla cieca - controlla lo schermo.")
+        scout_progress = None
+        return False
     print("[SCOUT] Raggiunto il limite di tentativi, attacco comunque l'ultima base trovata.")
     return True
 
@@ -1628,10 +1773,22 @@ def main():
     # leggere le risorse, invece di fidarci ciecamente del tempo fisso gia'
     # atteso dal .bat.
     print("[HOME] Attendo che il villaggio sia pronto...")
+    home_ready = False
     for _ in range(15):
         if is_home_screen():
+            home_ready = True
             break
         time.sleep(1.0)
+
+    # Clash of Clans resta sull'ultimo villaggio visitato: se una sessione
+    # precedente del bot del Villaggio Costruttori ha lasciato il gioco
+    # aperto lì, questo bot (villaggio primario) partirebbe alla cieca
+    # sullo schermo sbagliato. Vedi switch_to_village().
+    if home_ready:
+        print("[VILLAGGIO] Controllo di essere sul villaggio primario...")
+        switch_to_village("primario")
+    else:
+        print("[VILLAGGIO] Non risultiamo su una schermata home dopo l'attesa, salto il controllo villaggio.")
 
     if _config["priority_mode"] in ("gold", "elixir", "dark_elixir"):
         # Priorita' forzata dalla dashboard: salta il rilevamento
