@@ -34,6 +34,7 @@ BTN_SCHERMO = "📸 Schermo"
 BTN_MENU = "🔙 Menu principale"
 BTN_VILLAGGIO_PRIMARIO = "🏠 Villaggio Principale"
 BTN_VILLAGGIO_SECONDARIO = "🏗️ Villaggio Secondario"
+BTN_MURA_TOGGLE = "🧱 Mura ON/OFF"
 
 TOP_MENU_KEYBOARD = {
     "keyboard": [[BTN_VILLAGGIO_PRIMARIO], [BTN_VILLAGGIO_SECONDARIO]],
@@ -42,7 +43,7 @@ TOP_MENU_KEYBOARD = {
 }
 
 VILLAGE_KEYBOARD = {
-    "keyboard": [[BTN_AVVIA, BTN_STATO], [BTN_STOP, BTN_SCHERMO], [BTN_MENU]],
+    "keyboard": [[BTN_AVVIA, BTN_STATO], [BTN_STOP, BTN_SCHERMO], [BTN_MURA_TOGGLE], [BTN_MENU]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
@@ -127,9 +128,8 @@ def cmd_villaggio_secondario():
     _state["village"] = "secondario"
     send_message(
         "🏗️ Villaggio Secondario selezionato.\n"
-        "⚠️ Il bot per questo villaggio non è ancora pronto: Avvia/Stato/Stop "
-        "non fanno ancora nulla. /schermo funziona comunque (cattura solo "
-        "l'emulatore, non dipende dal bot)."
+        "Bot v0.13: attacco (doppio raid) ad ogni ciclo, raccolta elisir "
+        "ogni 10 cicli, upgrade mura ogni 20 cicli - tutto automatico."
     )
 
 
@@ -137,21 +137,30 @@ def cmd_menu():
     send_message("Scegli un villaggio:", keyboard=TOP_MENU_KEYBOARD)
 
 
-def _secondario_non_pronto():
-    send_message("🚧 Bot del Villaggio Secondario non ancora implementato.")
-
-
 def cmd_avvia():
     if _state["village"] == "secondario":
-        _secondario_non_pronto()
+        bot_control.start_bot_costruttori(progress=send_message)
         return
     bot_control.start_bot(progress=send_message)
 
 
 def cmd_stato():
     if _state["village"] == "secondario":
-        _secondario_non_pronto()
+        status = bot_control.get_bot_status()
+        if not status["windows_on"]:
+            send_message("💤 PC Windows spento o non raggiungibile in rete.")
+            return
+        if status["running"]:
+            log_tail = bot_control.get_costruttori_log_tail(8)
+            msg = (
+                "✅ PC Windows acceso, bot Villaggio Costruttori in esecuzione.\n\n"
+                "Ultime righe di log:\n" + "\n".join(log_tail)
+            )
+        else:
+            msg = "🟡 PC Windows acceso, ma il bot NON risulta in esecuzione."
+        send_message(msg[:3500])
         return
+
     status = bot_control.get_bot_status()
     if not status["windows_on"]:
         send_message("💤 PC Windows spento o non raggiungibile in rete.")
@@ -169,9 +178,9 @@ def cmd_stato():
 
 
 def cmd_stop():
-    if _state["village"] == "secondario":
-        _secondario_non_pronto()
-        return
+    # Generico per entrambi i villaggi: stop_bot() ferma qualunque processo
+    # python.exe in esecuzione (primario o Villaggio Costruttori, si
+    # escludono a vicenda) + BlueStacks + spegne il PC.
     bot_control.stop_bot(progress=send_message)
 
 
@@ -187,6 +196,24 @@ def cmd_muraoff():
     settings["auto_wall_upgrade"] = False
     bot_control.save_settings(settings)
     send_message("⛔ Upgrade automatico mura disattivato.")
+
+
+def cmd_mura_toggle():
+    """Bottone unico che alterna lo stato invece di due comandi separati
+    (/muraon, /muraoff restano comunque disponibili per chi preferisce
+    il testo). Non ha senso per il villaggio secondario: non ha ancora
+    un concetto di upgrade mura automatico.
+    """
+    if _state["village"] == "secondario":
+        send_message("🚧 Il Villaggio Secondario non ha ancora un upgrade mura attivabile/disattivabile: parte da solo ogni 20 cicli.")
+        return
+    settings = bot_control.get_settings()
+    settings["auto_wall_upgrade"] = not settings.get("auto_wall_upgrade", False)
+    bot_control.save_settings(settings)
+    if settings["auto_wall_upgrade"]:
+        send_message("✅ Upgrade automatico mura attivato: a fine sessione, se c'è un costruttore libero, le risorse farmate andranno a potenziare le mura.")
+    else:
+        send_message("⛔ Upgrade automatico mura disattivato.")
 
 
 def cmd_schermo():
@@ -218,6 +245,7 @@ COMMANDS = {
     BTN_STOP: cmd_stop,
     "/muraon": cmd_muraon,
     "/muraoff": cmd_muraoff,
+    BTN_MURA_TOGGLE: cmd_mura_toggle,
     "/schermo": cmd_schermo,
     BTN_SCHERMO: cmd_schermo,
     "/menu": cmd_menu,
@@ -246,7 +274,8 @@ def handle_text(text):
             "/stop - ferma il bot\n"
             "/schermo - manda uno screenshot dell'emulatore\n"
             "/muraon - attiva l'upgrade automatico mura a fine sessione\n"
-            "/muraoff - disattiva l'upgrade automatico mura"
+            "/muraoff - disattiva l'upgrade automatico mura\n"
+            "(oppure usa il bottone 🧱 Mura ON/OFF, alterna lo stato attuale)"
         )
 
 

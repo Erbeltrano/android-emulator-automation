@@ -36,6 +36,7 @@ SSH_OPTS = [
 ]
 
 BOT_LOG_PATH = r"C:\Users\simon\bot_log.txt"
+BOT_COSTRUTTORI_LOG_PATH = r"C:\Users\simon\bot_costruttori_log.txt"
 STATUS_PATH = r"C:\Users\simon\status.json"
 CONFIG_PATH = r"C:\Users\simon\config.json"
 HISTORY_PATH = r"C:\Users\simon\history.json"
@@ -53,7 +54,7 @@ DEFAULT_SETTINGS = {
     "threshold_dark_elixir": 3000,
     "home_low_gold": 300000,
     "home_low_elixir": 300000,
-    "home_low_dark_elixir": 1500,
+    "home_low_dark_elixir": 400000,
     "max_triggers": 20,
     "session_duration_minutes": 50,
     "auto_wall_upgrade": False,
@@ -206,6 +207,56 @@ def start_bot(progress=lambda msg: None):
 
     progress(f"⚠️ PC svegliato ma il lancio del task ha dato un problema:\n{out}")
     return False
+
+
+def start_bot_costruttori(progress=lambda msg: None):
+    """Sveglia il PC Windows e avvia il bot del Villaggio Costruttori
+    (`secondo_villaggio/bot_costruttori.py`, prima versione v0.2, confermata
+    dal vivo il 2026-07-30: 200% danno/3 stelle su un ciclo di test). Stesso
+    schema di `start_bot()`, ma lancia il task `CoCBotCostruttori` (creato
+    il 2026-07-30 - a differenza di quanto annotato in sessioni precedenti,
+    creare NUOVI task pianificati funziona regolarmente da questa macchina,
+    non serve riusare per forza `CoCBot`), che esegue
+    `run_bot_costruttori.bat` invece di `run_bot.bat`: stessa sequenza di
+    avvio BlueStacks/CoC, ma lancia `bot_costruttori.py --cycles 0` (loop
+    continuo) al posto del bot del villaggio primario.
+
+    Il cambio di villaggio (se il gioco è rimasto aperto su quello
+    sbagliato) è gestito dallo script stesso all'avvio, non qui - vedi
+    `switch_to_village()` in `bot_costruttori.py`.
+    """
+    progress("📡 Sveglio il PC Windows (Wake-on-LAN)...")
+    send_magic_packet()
+    time.sleep(WAKE_WAIT_SECONDS)
+
+    for _ in range(WAKE_SSH_RETRIES):
+        if windows_reachable():
+            break
+        time.sleep(WAKE_SSH_RETRY_DELAY)
+    else:
+        progress("❌ Il PC Windows non risponde via SSH dopo il Wake-on-LAN. Controlla che sia acceso.")
+        return False
+
+    if python_running():
+        progress("ℹ️ Un bot risulta già in esecuzione sul PC Windows (primario o Villaggio Costruttori).")
+        return True
+
+    ok, out = ssh_run('schtasks /run /tn "CoCBotCostruttori"')
+    if ok:
+        progress("✅ PC Windows sveglio, bot del Villaggio Costruttori avviato.")
+        return True
+
+    progress(f"⚠️ PC svegliato ma il lancio del task ha dato un problema:\n{out}")
+    return False
+
+
+def get_costruttori_log_tail(lines=30):
+    """Ultime righe del log del bot Villaggio Costruttori (nessun filtro
+    di rumore Telegram: quel bot logga molto meno del bot principale)."""
+    ok, out = ssh_run(f"powershell -Command \"Get-Content '{BOT_COSTRUTTORI_LOG_PATH}' -Tail {lines} -ErrorAction SilentlyContinue\"")
+    if not ok:
+        return []
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def _record_manual_stop():
