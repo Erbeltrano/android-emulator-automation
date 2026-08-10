@@ -35,9 +35,107 @@ ancora in corso e facendolo aspettare fino al tetto di sicurezza
 v0.6, fix vero (idea dell'utente): il gioco in realtà passa al raid
 successivo in 2-3s se si raggiunge il 100%, non aspetta il timer. Il
 segnale affidabile è la scritta in alto: "La battaglia INIZIA tra:"
-compare solo quando il prossimo raid è pronto (si può schierare subito,
-anche durante quel countdown). Letta via OCR (`_read_top_banner_state()`)
-al posto del pulsante rosso - vedi `wait_for_next_screen()`.
+compare solo quando il prossimo raid è pronto. Letta via OCR
+(`_read_top_banner_state()`) al posto del pulsante rosso - vedi
+`wait_for_next_screen()`.
+
+CORREZIONE v0.20 (bug vero trovato dal vivo il 2026-08-09): "La battaglia
+inizia tra: Ns" NON significa che si può schierare subito, come assunto
+qui dalla v0.6 - è ancora una schermata di ANTEPRIMA/scouting
+dell'avversario (bottone "Termina battaglia", camera larga, nessuna
+truppa/pannello danno), non la vera battaglia (quella ha "Resa", camera
+vicina al bordo villaggio, "la battaglia TERMINA tra"). Osservato dal vivo
+un countdown "inizia" ancora a 55s dopo l'inizio dello schieramento - un
+raid intero sprecato (quasi zero truppe piazzate) prima di capire la causa
+vera. Ora si aspetta attivamente che il banner passi a "termina" prima di
+schierare sul secondo raid - vedi `run_double_raid()`.
+
+v0.14: l'upgrade mura sceglieva "la prima voce Muro trovata scorrendo
+dall'alto" (v0.11-v0.13) assumendo fosse la più economica/al livello più
+basso - rivelatosi un bug vero (verificato dal vivo il 2026-08-08: le voci
+non sono ordinate per livello nella tendina, e con lo scroll blindamente
+riposizionato per conteggio di swipe capitava di cliccare voci sbagliate,
+compresi edifici estranei come "Megatesla" durante lo sviluppo - mai
+capitato in produzione, solo nei test dal vivo di questa sessione). Ora
+scansiona TUTTA la tendina, identifica ogni voce 'Muro' per una "firma"
+testuale scroll-indipendente (il suffisso "xN", es. "x130" - non la sua
+posizione sullo schermo, che non è mai riproducibile con precisione
+sufficiente scorrendo), legge il livello reale di ognuna (titolo "Muro
+(liv. N)" mostrato dal gioco stesso) e sceglie sempre quella al livello
+più basso - vedi commento generale sopra try_wall_upgrade(). Aggiunto
+anche un controllo esplicito con detect_village_type() prima e dopo la
+scansione, che interrompe subito il giro con un avviso Telegram se il
+villaggio risultasse cambiato nel frattempo.
+
+Limite noto: le voci "Muro" SENZA suffisso (un solo muro rimasto a quel
+livello, nessun gruppo) vengono lette ma escluse dalla scelta finale -
+verificato dal vivo che "Migliora ancora" non apre la modalità batch su
+di esse (il gioco non ha nulla da "aggiungere" con un solo muro
+disponibile), quindi il tentativo di acquisto fallirebbe comunque. Se il
+livello più basso in assoluto capita di essere un muro singolo, resta
+indietro finché non si aggrega a un gruppo (es. un altro muro raggiunge
+lo stesso livello) - non blocca la sessione, sceglie semplicemente il
+prossimo livello più basso tra le voci con un gruppo reale.
+
+v0.15: bug vero trovato dal vivo il 2026-08-09 - l'utente ha avviato il
+bot da Telegram mentre era fuori casa e, controllando lo schermo poco
+dopo, l'ha trovato bloccato sul popup "Schede degli incarichi" invece che
+in battaglia. Diagnosi dal vivo (log + screenshot ADB): switch_to_village
+falliva (il tap sulla barca verso il Villaggio Costruttori non trovava più
+la barca), ma il valore di ritorno non veniva controllato in main() - il
+bot procedeva comunque al ciclo di attacco usando le coordinate del
+Villaggio Costruttori mentre il gioco era rimasto sul primario, aprendo
+per sbaglio quel popup invece di attaccare (nessun danno reale, verificato
+su oro/elisir/trofei invariati). Causa radice del tap fallito: il dezoom
+automatico della camera (aggiunto l'8/8, DOPO che le coordinate della
+barca erano state calibrate il 4/8) ha cambiato lo stato zoom/pan con cui
+il bot parte, spostando dove si trova la barca sullo schermo - vedi
+commento su BOAT_TO_BUILDER_PAN/POINT. Due fix: (1) coordinate della
+barca ricalibrate dal vivo nel nuovo stato dezoomato (2) main() ora si
+ferma con un avviso Telegram se switch_to_village fallisce, invece di
+proseguire alla cieca sul villaggio sbagliato.
+
+v0.16: bug vero trovato dal vivo lo stesso giorno, subito dopo il fix v0.15
+- l'utente ha avviato il bot, un primo ciclo (2 raid) è andato a buon fine,
+ma il secondo si è bloccato di nuovo sul popup "Schede degli incarichi".
+Diagnosi dal vivo: NON un problema di villaggio sbagliato stavolta (il
+bot era correttamente sul Villaggio Costruttori, verificato via
+screenshot) - i tap "a vuoto" pensati per chiudere un eventuale popup
+"Bonus stella!" (STAR_BONUS_OK_BUTTON, coordinate fisse) hanno invece
+aperto quel badge evento stagionale, presente anche su questo villaggio
+e non solo sul primario. Il ciclo proseguiva comunque alla cieca verso
+"Attacco!"/"Cerca!" con quel popup ancora aperto, restando bloccato ad
+aspettare la fine di una battaglia mai iniziata. Fix: `_ensure_home_or_recover()`
+verifica `is_home_screen()` dopo la pulizia di fine ciclo e, se non siamo
+sulla home, tocca una zona vuota della mappa per deselezionare eventuali
+pannelli aperti (stessa tecnica di `_close_wall_panel()`) - **non** il tasto
+Indietro Android, scartato dopo un test dal vivo pericoloso lo stesso
+giorno: premuto un paio di volte sulla home screen fa comparire il dialog
+nativo "Vuoi uscire dal gioco?", un rischio reale di chiudere il gioco per
+sbaglio (vedi commento su `_ensure_home_or_recover()`). Se dopo 3 tentativi
+siamo ancora bloccati, il ciclo viene contato come fallito (arriva al tetto
+di sicurezza `MAX_CONSECUTIVE_ERRORS` invece di restare bloccato in
+silenzio).
+
+v0.17: il bug del popup imprevisto (v0.16) si è ripresentato lo stesso
+giorno nonostante il fix, e l'utente ha chiesto di analizzare OGNI singolo
+tap per trovare la causa vera invece di continuare a scoprire sintomi.
+Diagnosi con screenshot di debug dopo ogni tap sospetto (RETURN_HOME_BUTTON,
+i due STAR_BONUS_OK_BUTTON), poi un run reale supervisionato: trovato che
+STAR_BONUS_OK_BUTTON (960, 838) veniva tappato SEMPRE, incondizionatamente,
+"a vuoto se non serve" - ma è una coordinata sulla MAPPA di gioco (non un
+elemento di UI fisso), quindi se un edificio (es. un muro) si trova lì
+sotto per via della posizione della camera in quel momento (stesso problema
+di fondo già noto per la barca), il tap apre il suo pannello invece di non
+fare nulla. Osservato dal vivo un caso concreto e serio: un primo tap ha
+aperto il pannello "Muro (liv. 8)", il secondo tap (stesso punto, ora sul
+pannello aperto) è caduto sul pulsante "Migliora" (oro), aprendo un vero
+dialog di conferma spesa "Portare al livello 9? 640.000 Oro" - a un tap di
+distanza da una spesa reale non voluta (nessuna spesa avvenuta, chiuso in
+tempo durante la diagnosi). Fix: entrambi i tap STAR_BONUS_OK_BUTTON (a
+inizio E a fine ciclo) ora scattano solo se `is_home_screen()` dice che
+c'è davvero qualcosa da chiudere, invece di sempre "a vuoto" - se non serve
+non si tocca affatto quel punto.
 
 ATTENZIONE - parti ancora da consolidare:
 - Il rilevamento raid1→raid2/risultati combina OCR (`TOP_BANNER_REGION`)
@@ -54,6 +152,7 @@ import argparse
 import itertools
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -68,7 +167,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-VERSION = "0.13"
+VERSION = "0.21"
 
 
 def find_tesseract_cmd():
@@ -120,6 +219,18 @@ def send_telegram(message: str):
         print("[TELEGRAM] Status:", resp.status_code)
     except Exception as e:
         print("[TELEGRAM] Errore invio:", e)
+
+
+def send_telegram_photo(path: str, caption: str = ""):
+    """Vedi BOT_COMPLETO_MAC.py per il contesto - stesso helper, duplicato
+    qui per restare uno script autonomo."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    try:
+        with open(path, "rb") as f:
+            resp = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption}, files={"photo": f}, timeout=20)
+        print("[TELEGRAM] sendPhoto status:", resp.status_code)
+    except Exception as e:
+        print("[TELEGRAM] Errore invio foto:", e)
 
 
 # ==========================
@@ -192,6 +303,8 @@ def adb_swipe(x1, y1, x2, y2, duration_ms=600):
     ))
 
 
+
+
 def adb_screenshot(retries=3, retry_delay=1.0):
     """Stesso pattern di `adb_screenshot()` nel bot principale: ritenta in
     caso di intoppo ADB transitorio (tipico post-risveglio a freddo)."""
@@ -217,7 +330,10 @@ def adb_screenshot(retries=3, retry_delay=1.0):
 ATTACK_BUTTON = (110, 990)          # "Attacco!" nella home del Villaggio Costruttori
 SEARCH_BUTTON = (1425, 710)         # "Cerca!" nel popup "Inizia attacco"
 RETURN_HOME_BUTTON = (960, 910)     # "Torna al villaggio" a fine dei due raid
-STAR_BONUS_OK_BUTTON = (960, 838)   # OK sul popup extra "Bonus stella!" (se compare)
+STAR_BONUS_OK_BUTTON = (960, 838)   # OK sul popup extra "Bonus stella!" (se compare) - NON PIÙ USATO
+                                     # da v0.18 (era una coordinata sulla mappa, rischio di tap su un
+                                     # edificio vero - vedi commento in run_double_raid()), lasciato solo
+                                     # come riferimento storico
 
 # Carretto elisir (ricompense dalle difese, cap 1.600.000): flusso
 # documentato in secondo_villaggio/README.md (calibrato e testato con soldi
@@ -286,6 +402,10 @@ INTER_TAP_DELAY_RANGE = (0.2, 0.4)
 # sotto (BATTLE_BUTTON_CHECK_POINT) smettesse di funzionare per qualche
 # motivo, non più il meccanismo principale (v0.3).
 BATTLE_WAIT_SECONDS = 155.0
+RAID2_PREVIEW_MAX_WAIT = 70.0  # v0.20: tetto massimo per aspettare che l'anteprima del
+                                # secondo raid ("la battaglia inizia tra:") passi alla vera
+                                # battaglia ("termina tra") - osservato dal vivo fino a 55s
+                                # di countdown ancora presenti, margine di sicurezza sopra
 
 # v0.3: rilevamento attivo di fine battaglia invece di un'attesa fissa.
 # Nel primo test autonomo reale (2026-07-30) l'attesa fissa ha fatto
@@ -301,9 +421,12 @@ BATTLE_WAIT_SECONDS = 155.0
 # raid e l'altro, facendo credere al bot che la battaglia fosse ancora in
 # corso. Sostituito con un segnale diretto suggerito dall'utente: leggere
 # via OCR la scritta in alto - "La battaglia INIZIA tra:" compare SOLO
-# quando il prossimo raid è pronto e si può schierare subito (verificato:
-# durante "termina tra" - battaglia in corso - OCR legge "termina", mai
-# "inizia"). Appena la si legge, si schiera subito, senza aspettare altro.
+# quando il prossimo raid è pronto (verificato: durante "termina tra" -
+# battaglia in corso - OCR legge "termina", mai "inizia"). Usata per
+# capire CHE il raid successivo esiste, non più per decidere quando
+# schierare - vedi correzione v0.20 sopra e in run_double_raid(): "inizia"
+# è ancora un'anteprima, bisogna aspettare che diventi "termina" prima di
+# schierare.
 TOP_BANNER_REGION = {"left": 650, "top": 10, "width": 650, "height": 90}
 
 # `RESULTS_SCREEN_CHECK_POINT` (195,990, dove normalmente c'è l'icona
@@ -326,8 +449,21 @@ MAX_CONSECUTIVE_ERRORS = 3
 # questo bot partirebbe alla cieca sullo schermo sbagliato. Coordinate e
 # soglie calibrate dal vivo il 2026-07-30 con screenshot reali (vedi gli
 # stessi commenti in BOT_COMPLETO_MAC.py, identici qui per costruzione).
-HOME_CHECK_POINT = (135, 1010)
+HOME_CHECK_REGION = {"left": 40, "top": 1038, "width": 160, "height": 17}  # striscia arancione del
+                     # pulsante "Attacco!", sotto il testo e sopra il bordo
 HOME_CHECK_MIN_DIFF = 50
+# v0.18: HOME_CHECK_POINT (singolo pixel, (135, 1010)) sostituito con una
+# REGIONE dopo un bug vero trovato dal vivo il 2026-08-09: quel pixel
+# cadeva esattamente su un contorno nero della scritta "Attacco!" in certi
+# stati di zoom (r-b praticamente 0 invece che arancione), facendo
+# risultare is_home_screen() False su una schermata home in realtà
+# perfettamente pulita - falso negativo che ha fatto fallire
+# _ensure_home_or_recover() e bloccare/interrompere cicli buoni per errore.
+# La striscia qui sopra (sotto il testo, sopra il bordo del pulsante) è
+# stata verificata su 4 screenshot reali diversi (villaggio primario e
+# Costruttore, stati di zoom diversi): r-b medio sempre 71-74, mai vicino
+# alla soglia - molto più tollerante di un singolo pixel a piccoli
+# spostamenti di rendering del testo.
 # v0.8 (2026-08-04): BOAT_TO_BUILDER_POINT era un tap diretto (badge fisso
 # sull'acqua) - ma un nuovo badge dell'evento stagionale ("Scheda degli
 # incarichi", icona con countdown "27g 12h", non presente al momento della
@@ -336,19 +472,116 @@ HOME_CHECK_MIN_DIFF = 50
 # switch_to_village("costruttore") falliva sempre (2 tentativi, "Cambio
 # fallito"), scoperto dal vivo. Stesso fix già usato per il tragitto di
 # ritorno: pan della camera per liberare la barca, poi tap.
-BOAT_TO_BUILDER_PAN = ((1300, 700), (1650, 260))
-BOAT_TO_BUILDER_POINT = (830, 390)
-BOAT_TO_PRIMARY_PAN = ((1400, 300), (700, 700))
-BOAT_TO_PRIMARY_POINT = (1670, 730)  # ricalibrato 2026-08-04, vedi commento in BOT_COMPLETO_MAC.py
+#
+# Ricalibrato dal vivo il 2026-08-09 (v0.15): il dezoom automatico della
+# camera (windows/dezoom_camera.ps1, integrato negli script di avvio l'8/8,
+# DOPO che queste coordinate erano già calibrate il 4/8) cambia lo stato
+# zoom/pan con cui il bot parte - le vecchie coordinate non trovavano più la
+# barca (bug vero osservato dal vivo dall'utente: switch_to_village falliva,
+# il bot procedeva comunque all'attacco sul villaggio sbagliato, finendo
+# bloccato sul popup "Schede degli incarichi").
+#
+# Scoperta importante durante la ricalibrazione dal vivo: lo zoom/pan della
+# camera dopo un riavvio a freddo NON è deterministico come si pensava (il
+# commento di dezoom_camera.ps1 assumeva che il gesto portasse sempre allo
+# stesso zoom minimo) - osservati dal vivo lo stesso giorno DUE stati
+# diversi con la barca in posizioni molto diverse sullo schermo (uno più
+# zoomato-indietro, uno più vicino), senza aver ancora capito la causa
+# esatta (possibile interazione con eventi in-game come una notifica di
+# attacco subito, non confermato). Fix pragmatico invece di inseguire la
+# causa esatta: BOAT_TO_BUILDER/PRIMARY_CANDIDATES prova più coppie
+# pan+punto in sequenza (una per ogni stato osservato dal vivo), verificando
+# con detect_village_type() dopo ognuna - se in futuro emerge un terzo stato
+# diverso, aggiungere qui un'altra voce invece di ricalibrare da zero.
+# Soluzione più robusta ma non ancora implementata: cercare la barca via
+# template matching (cv2.matchTemplate) invece di coordinate fisse, così da
+# non dipendere da un numero chiuso di stati noti - lasciata per una
+# sessione futura dedicata.
+BOAT_TO_BUILDER_CANDIDATES = [
+    {"pan": None, "point": (740, 430)},    # stato "zoomato indietro" (dezoom pulito)
+    {"pan": None, "point": (460, 860)},    # stato "più vicino" osservato dopo un giro completo
+]
+BOAT_TO_PRIMARY_CANDIDATES = [
+    {"pan": ((1400, 300), (700, 700)), "point": (1720, 700)},  # stato "zoomato indietro"
+    {"pan": None, "point": (1773, 397)},                        # stato "più vicino"
+]
 VILLAGE_CHECK_REGION = {"left": 600, "top": 0, "width": 700, "height": 15}
 VILLAGE_CHECK_GB_THRESHOLD = 20
+
+# v0.21 (2026-08-10): bug vero trovato dal vivo lo stesso giorno - l'utente
+# ha segnalato che il Villaggio Costruttori "non partiva" quando avviato da
+# fuori casa. Diagnosi via log reale (bot_costruttori_log.txt sul PC
+# Windows): switch_to_village("costruttore") ha provato ENTRAMBI i
+# candidati sopra e ha mancato la barca con tutti e due - ricalibrando dal
+# vivo nella stessa sessione (screenshot ADB reali), la barca si trovava
+# quel giorno in un TERZO stato, vicino al secondo candidato ma abbastanza
+# spostato da mancare comunque il tap puntuale ((420,900) confermato
+# funzionante contro (460,860) del candidato - solo 40-65px di differenza,
+# ma sufficienti a mancare la hitbox). Confema dal vivo il tema ricorrente
+# di tutta questa serie di sessioni: la posizione della barca non è
+# deterministica tra un riavvio e l'altro, e aggiungere sempre nuovi
+# candidati fissi è rincorrere sintomi all'infinito.
+#
+# Fix vero: invece di tappare alla cieca il punto del candidato, si cerca
+# la barca via cv2.matchTemplate (template ritagliato da uno screenshot
+# reale, boat_to_builder_ref.png/boat_to_primary_ref.png) in una finestra
+# di ricerca centrata sul punto del candidato (non tutto lo schermo, per
+# velocità e per evitare falsi positivi altrove) - così un piccolo
+# spostamento della barca rispetto alla posizione calibrata (come quello
+# osservato oggi) viene comunque trovato. Provato anche a scale diverse
+# (BOAT_MATCH_SCALES) per tollerare un po' di variazione di zoom, non solo
+# di posizione - non ancora verificato dal vivo su un vero stato di zoom
+# diverso (oggi ne è stato osservato solo uno), quindi resta un
+# miglioramento best-effort. Se il template match non trova nulla sopra
+# BOAT_MATCH_MIN_CONFIDENCE, si ricade sul vecchio tap puntuale esatto del
+# candidato (nessuna regressione rispetto a prima).
+BOAT_MATCH_SCALES = (0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15)
+BOAT_MATCH_MIN_CONFIDENCE = 0.55
+BOAT_MATCH_SEARCH_MARGIN = 160  # finestra di ricerca: punto del candidato +/- questo margine
+BOAT_TO_BUILDER_REF_FILE = "boat_to_builder_ref.png"
+BOAT_TO_PRIMARY_REF_FILE = "boat_to_primary_ref.png"
+_boat_to_builder_ref = cv2.imread(BOAT_TO_BUILDER_REF_FILE)
+_boat_to_primary_ref = cv2.imread(BOAT_TO_PRIMARY_REF_FILE)
+
+
+def _find_boat(frame, template, around_point, margin=BOAT_MATCH_SEARCH_MARGIN):
+    """Cerca `template` dentro una finestra centrata su `around_point` (+/-
+    margin), provando le scale in BOAT_MATCH_SCALES per tollerare un po' di
+    variazione di zoom. Ritorna il centro assoluto del miglior match se
+    sopra BOAT_MATCH_MIN_CONFIDENCE, altrimenti None (il chiamante ricade
+    sul tap puntuale del candidato)."""
+    if template is None:
+        return None
+    px, py = around_point
+    l = max(0, px - margin)
+    t = max(0, py - margin)
+    r = min(frame.shape[1], px + margin)
+    b = min(frame.shape[0], py + margin)
+    crop = frame[t:b, l:r]
+    th, tw = template.shape[:2]
+    best_val, best_loc, best_size = -1.0, None, None
+    for scale in BOAT_MATCH_SCALES:
+        sw, sh = max(1, int(tw * scale)), max(1, int(th * scale))
+        if sw >= crop.shape[1] or sh >= crop.shape[0]:
+            continue
+        resized = cv2.resize(template, (sw, sh))
+        result = cv2.matchTemplate(crop, resized, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val > best_val:
+            best_val, best_loc, best_size = max_val, max_loc, (sw, sh)
+    if best_val < BOAT_MATCH_MIN_CONFIDENCE:
+        return None
+    return (l + best_loc[0] + best_size[0] // 2, t + best_loc[1] + best_size[1] // 2)
 
 
 def _home_pixel_says_home():
     frame = adb_screenshot()
-    x, y = HOME_CHECK_POINT
-    b, g, r = frame[y, x]
-    return (int(r) - int(b)) > HOME_CHECK_MIN_DIFF
+    l, t = HOME_CHECK_REGION["left"], HOME_CHECK_REGION["top"]
+    w, h = HOME_CHECK_REGION["width"], HOME_CHECK_REGION["height"]
+    region = frame[t:t + h, l:l + w].astype(np.int32)
+    r_mean = region[:, :, 2].mean()
+    b_mean = region[:, :, 0].mean()
+    return (r_mean - b_mean) > HOME_CHECK_MIN_DIFF
 
 
 def is_home_screen():
@@ -359,6 +592,42 @@ def is_home_screen():
         return False
     time.sleep(0.4)
     return _home_pixel_says_home()
+
+
+RECOVERY_EMPTY_MAP_POINT = (300, 200)  # stessa zona rocciosa vuota di WALL_EMPTY_MAP_POINT più sotto
+
+
+def _ensure_home_or_recover(max_attempts=3):
+    """Bug vero trovato dal vivo il 2026-08-09 (v0.15): dopo un ciclo, i tap
+    "a vuoto" per chiudere un eventuale popup 'Bonus stella!' (STAR_BONUS_OK_BUTTON,
+    a coordinate fisse) possono invece aprire per sbaglio un popup diverso e
+    imprevisto (es. il badge evento stagionale "Schede degli incarichi",
+    presente anche sul Villaggio Costruttori, non solo sul primario) - il
+    ciclo proseguiva comunque alla cieca, finendo bloccato ad aspettare la
+    fine di una battaglia mai iniziata.
+
+    ATTENZIONE - la prima versione di questo fix usava il tasto Indietro
+    Android (KEYCODE_BACK) per chiudere qualunque cosa fosse aperta, in modo
+    generico. Scartato dopo un test dal vivo pericoloso lo stesso giorno:
+    premuto un paio di volte sulla home screen, il tasto Indietro fa
+    comparire il dialog nativo "Vuoi uscire dal gioco?" - un rischio reale
+    di chiudere il gioco per sbaglio se usato alla cieca in un loop. Usa
+    invece un tap su una zona rocciosa vuota fuori dalla base
+    (RECOVERY_EMPTY_MAP_POINT, stessa tecnica già collaudata da
+    _close_wall_panel() per deselezionare pannelli edificio) - non chiude un
+    popup a schermo intero come "Schede degli incarichi" (serve la sua X),
+    ma è innocuo se non serve e chiude in modo affidabile i pannelli
+    edificio aperti per sbaglio (es. da STAR_BONUS_OK_BUTTON finito su un
+    edificio). Se dopo i tentativi non risultiamo ancora su una home
+    screen, meglio fermarsi con un errore (il chiamante lo tratta come
+    ciclo fallito, vedi main()) che rischiare altre azioni alla cieca."""
+    for _ in range(max_attempts):
+        if is_home_screen():
+            return True
+        print("[RECOVERY] Non risultiamo su una home screen, tocco una zona vuota della mappa...")
+        adb_tap(*RECOVERY_EMPTY_MAP_POINT)
+        time.sleep(1.2)
+    return is_home_screen()
 
 
 def detect_village_type(frame=None):
@@ -372,35 +641,47 @@ def detect_village_type(frame=None):
     return "primario" if (g_mean - b_mean) > VILLAGE_CHECK_GB_THRESHOLD else "costruttore"
 
 
-def switch_to_village(target, max_attempts=2):
-    for attempt in range(max_attempts):
+def switch_to_village(target):
+    """Prova ogni candidato pan+punto in BOAT_TO_BUILDER/PRIMARY_CANDIDATES
+    (uno per ogni stato di zoom/pan osservato dal vivo - vedi commento sulle
+    costanti) finché uno funziona o si esauriscono i tentativi.
+
+    v0.21: per ogni candidato, prima di tappare il punto esatto, cerca la
+    barca via template matching in una finestra centrata su quel punto (vedi
+    _find_boat) - se la trova (anche spostata di un po' rispetto al punto
+    calibrato), tappa la posizione trovata invece del punto fisso. Se non la
+    trova, ricade sul vecchio comportamento (tap del punto esatto)."""
+    candidates = BOAT_TO_BUILDER_CANDIDATES if target == "costruttore" else BOAT_TO_PRIMARY_CANDIDATES
+    template = _boat_to_builder_ref if target == "costruttore" else _boat_to_primary_ref
+    for i, candidate in enumerate(candidates):
         current = detect_village_type()
         if current == target:
-            if attempt > 0:
+            if i > 0:
                 print(f"[VILLAGGIO] Ora siamo su '{target}'.")
             return True
 
-        print(f"[VILLAGGIO] Siamo su '{current}', serve '{target}': tocco la barca...")
-        if target == "costruttore":
-            adb_swipe(BOAT_TO_BUILDER_PAN[0][0], BOAT_TO_BUILDER_PAN[0][1],
-                      BOAT_TO_BUILDER_PAN[1][0], BOAT_TO_BUILDER_PAN[1][1])
+        print(f"[VILLAGGIO] Siamo su '{current}', serve '{target}': tocco la barca (candidato {i + 1}/{len(candidates)})...")
+        pan, point = candidate["pan"], candidate["point"]
+        if pan is not None:
+            adb_swipe(pan[0][0], pan[0][1], pan[1][0], pan[1][1])
             time.sleep(0.8)
-            adb_tap(*BOAT_TO_BUILDER_POINT)
+
+        found = _find_boat(adb_screenshot(), template, point)
+        if found is not None:
+            print(f"[VILLAGGIO] Barca trovata via template match a {found} (candidato puntava a {point}).")
+            adb_tap(*found)
         else:
-            adb_swipe(BOAT_TO_PRIMARY_PAN[0][0], BOAT_TO_PRIMARY_PAN[0][1],
-                      BOAT_TO_PRIMARY_PAN[1][0], BOAT_TO_PRIMARY_PAN[1][1])
-            time.sleep(0.8)
-            adb_tap(*BOAT_TO_PRIMARY_POINT)
+            adb_tap(*point)
         time.sleep(4.0)
 
     # v0.9: stesso fix di BOT_COMPLETO_MAC.py - il controllo veniva fatto
     # solo PRIMA di ogni tap, mai dopo l'ultimo, quindi un cambio riuscito
-    # solo al secondo tentativo veniva comunque riportato come fallito.
+    # solo all'ultimo tentativo veniva comunque riportato come fallito.
     if detect_village_type() == target:
         print(f"[VILLAGGIO] Ora siamo su '{target}'.")
         return True
 
-    print(f"[VILLAGGIO] Cambio fallito dopo {max_attempts} tentativi, siamo ancora su '{detect_village_type()}'.")
+    print(f"[VILLAGGIO] Cambio fallito dopo {len(candidates)} tentativi, siamo ancora su '{detect_village_type()}'.")
     return False
 
 
@@ -423,23 +704,63 @@ def switch_to_village(target, max_attempts=2):
 #   si usa sempre e solo il pulsante oro.
 # - Possono comparire PIÙ voci "Muro" contemporaneamente nella tendina
 #   (account rush, livelli di mura disomogenei) - a differenza del
-#   villaggio primario dove ce n'è sempre una sola. Leggere il costo esatto
-#   di ognuna per scegliere la più economica si è rivelato inaffidabile,
-#   testato offline sugli screenshot del 2026-08-04: stesso tipo di bug OCR
-#   già documentato nel villaggio primario ("204 000" letto "#204 000",
-#   "8 500" letto "@38" a seconda dello sfondo dietro il pannello
-#   semi-trasparente). Deciso con l'utente: si prende semplicemente la
-#   PRIMA voce "Muro" trovata scorrendo dall'alto (stessa logica già
-#   collaudata di _scroll_to_wall_entry() nel primario, nessuna lettura di
-#   cifre) - quando quella voce sale abbastanza di costo, un'altra voce più
-#   economica verrà trovata prima al giro successivo.
+#   villaggio primario dove ce n'è sempre una sola. Fino alla v0.13 si
+#   prendeva semplicemente la PRIMA voce "Muro" trovata scorrendo dall'alto
+#   (nessuna lettura di cifre, lo stesso costo era già noto per essere
+#   inaffidabile via OCR - "204 000" letto "#204 000", "8 500" letto "@38"
+#   a seconda dello sfondo semi-trasparente, testato offline il 2026-08-04)
+#   - **rivelatosi un bug vero**: verificato dal vivo il 2026-08-08 che le
+#   voci "Muro" NON sono vicine tra loro né ordinate per costo/livello
+#   nella tendina (es. visto dal vivo: livelli 3, 4, 5, 6 sparsi in punti
+#   diversi della lista, per niente in quest'ordine scorrendo) - "la prima
+#   trovata" finiva quindi per scegliere un gruppo praticamente a caso,
+#   spesso non quello più indietro, esattamente il sintomo lamentato
+#   dall'utente (alcune mura spinte avanti, altre mai toccate).
+#
+#   Fix (v0.14): niente più bisogno di indovinare dal costo o dalla
+#   posizione nella lista. Selezionando una voce, il gioco mostra da solo
+#   un titolo grande "Muro (liv. N)" sopra i pulsanti - un numero piccolo e
+#   pulito, molto più affidabile del testo dei costi (niente separatori
+#   delle migliaia, niente sfondo semi-trasparente disomogeneo). Un giro
+#   ora scansiona TUTTA la tendina, legge il livello vero di ogni voce
+#   "Muro" trovata (_read_wall_level(), calibrato dal vivo il 2026-08-08 su
+#   4 livelli reali diversi: 3/4/5/6, tutti letti correttamente), sceglie
+#   quella al livello più basso, e solo su quella esegue il batch di
+#   upgrade - così tutte le mura avanzano di pari passo invece che a caso.
+#
+#   Scoperta collaterale della stessa sessione: il costo NON è sempre e
+#   solo in oro come si pensava ("Muro x5" mostrava 320.000 in ELISIR nella
+#   tendina, e il suo pannello offriva sia "Migliora" oro CHE elisir allo
+#   stesso prezzo, 6 pulsanti invece dei soliti 4-5) - il codice continua a
+#   pagare sempre e solo in oro (comportamento invariato, scelta esplicita
+#   di sempre), ma un'eventuale voce "Muro" col solo pagamento in elisir
+#   fallirebbe in modo sicuro sui controlli esistenti (nessuna spesa, vedi
+#   try_wall_upgrade) invece di spendere la valuta sbagliata.
 BUILDER_BADGE_POINT_BB = (1115, 65)  # badge "Miglioramenti", vista di default del Villaggio Costruttori
 WALL_DROPDOWN_REGION = {"left": 870, "top": 150, "width": 540, "height": 650}
 WALL_DROPDOWN_SCROLL = ((1140, 700), (1140, 300))
 WALL_MAX_SCROLL_ATTEMPTS = 8
+WALL_LIST_MAX_SCROLL_STEPS = 10  # scansione completa della tendina (_scan_all_wall_entries):
+                                  # verificato dal vivo il 2026-08-08 che ~6 swipe bastano per
+                                  # raggiungere il fondo della lista attuale, margine di sicurezza
+                                  # per quando l'account sblocca altri edifici in futuro
+WALL_LEVEL_TITLE_REGION = {"left": 650, "top": 670, "width": 650, "height": 75}  # titolo grande
+                                  # "<Edificio> (liv. N)" che compare sopra i pulsanti dopo aver
+                                  # selezionato una voce - vedi _read_wall_level
+WALL_LEVEL_MAX_PLAUSIBLE = 20  # livello massimo plausibile per un muro - oltre questo la lettura
+                                  # OCR viene scartata come sbagliata (vedi _read_wall_level)
+WALL_EMPTY_MAP_POINT = (300, 200)  # zona rocciosa vuota fuori dalla base - tap per chiudere in modo
+                                  # affidabile qualunque pannello/tendina aperta, usato nella fase di
+                                  # esplorazione qui sotto. Più affidabile di deselect_all_bb() (doppio
+                                  # tap sulla barra oro) per uso ripetuto: verificato dal vivo il
+                                  # 2026-08-08 che quest'ultimo a volte non chiude nulla.
 WALL_ACTION_BAR_REGION = {"left": 300, "top": 760, "width": 1350, "height": 220}
-WALL_COST_LABEL_OFFSET = (0, -55)   # dal centro del pulsante "Migliora" al centro dell'etichetta di costo
-WALL_COST_LABEL_SIZE = (90, 15)
+WALL_COST_LABEL_OFFSET = (0, -73)   # dal centro del pulsante "Migliora" al centro dell'etichetta di costo -
+                                     # ricalibrato dal vivo il 2026-08-08 (vedi _wall_cost_is_red): l'offset -55
+                                     # ereditato dal villaggio primario catturava solo il bordo inferiore del
+                                     # numero, causando un falso negativo reale (34 mura, costo 4.080.000 contro
+                                     # 3.976.404 disponibili, mai rilevato come rosso)
+WALL_COST_LABEL_SIZE = (90, 18)
 WALL_MAX_ADD_TAPS = 60
 GENERIC_DIALOG_CONFIRM_POINT = (1170, 693)  # pulsante "OK" verde del dialog "Migliora le mura" /
                                              # "Vuoi davvero migliorare le mura selezionate per N Oro?"
@@ -472,6 +793,33 @@ def _find_text_center(frame, region, needle):
             cy = t + data["top"][i] + data["height"][i] // 2
             return (cx, cy)
     return None
+
+
+# v0.21 (2026-08-10): stesso fix del bot del villaggio primario (v3.14) -
+# il dialog nativo di Clash of Clans "C'e' nessuno? La connessione e' stata
+# interrotta per inattivita'" e' stato osservato dal vivo oggi (villaggio
+# primario, ma e' un dialog di gioco generico, non specifico di un
+# villaggio - può comparire anche qui). Rilevato via OCR, NESSUN tap
+# automatico sul pulsante "RICARICA GIOCO" (testato dal vivo sul primario:
+# ha chiuso l'intero processo HD-Player.exe invece di ricaricare la
+# partita - rischio peggiore del problema). Se rilevato, manda una foto e
+# solleva un errore vero invece di procedere alla cieca con deploy_wave().
+RECONNECT_DIALOG_REGION = {"left": 560, "top": 400, "width": 850, "height": 280}
+
+
+def _check_reconnect_dialog():
+    frame = adb_screenshot()
+    if _find_text_center(frame, RECONNECT_DIALOG_REGION, "interrotta") is None:
+        return False
+    debug_path = "debug_reconnect_dialog.png"
+    cv2.imwrite(debug_path, frame)
+    send_telegram_photo(
+        debug_path,
+        "🛑 Il gioco mostra 'Connessione interrotta per inattività' - non tocco da solo "
+        "RICARICA GIOCO (rischia di chiudere l'emulatore, verificato dal vivo sul primario). "
+        "Ricarica il gioco a mano, poi riavvia il bot.",
+    )
+    return True
 
 
 def _find_action_bar_buttons(frame):
@@ -513,11 +861,21 @@ def _find_action_bar_buttons_retry(min_count, attempts=3, delay=0.8, debug_name=
 def _wall_cost_is_red(frame, button_center):
     """Identico a _wall_cost_is_red() del villaggio primario: True se il
     costo mostrato sopra il pulsante 'Migliora' (oro) è rosso - il gioco lo
-    fa quando l'oro disponibile non basta più. Non ancora ricalibrato dal
-    vivo su questa specifica UI (soglia/offset ereditati dal primario, il
-    layout del pannello sembra visivamente identico) - se il rilevamento
-    risultasse impreciso al primo uso reale, va verificato con uno
-    screenshot di debug prima di continuare."""
+    fa quando l'oro disponibile non basta più.
+
+    Ricalibrato dal vivo il 2026-08-08 (bug reale trovato durante un test):
+    l'offset/dimensione ereditati dal villaggio primario catturavano solo
+    il bordo inferiore del numero di costo, non il numero stesso - con un
+    costo a 7 cifre (es. "4 080 000") il crop cadeva quasi tutto su sfondo
+    chiaro invece che sul testo, diluendo il conteggio di pixel rossi sotto
+    soglia e facendo tornare sempre "non rosso" anche quando lo era
+    visibilmente. Risultato pratico osservato: il batch è arrivato a 34
+    mura (4.080.000 richiesti) con solo 3.976.404 disponibili, senza mai
+    fermarsi prima. Nessuna spesa avvenuta (il controllo successivo sul
+    dialog di conferma ha comunque rifiutato di dichiarare successo), ma
+    va corretto per evitare di sprecare interi giri. Nuovo
+    offset/dimensione verificati su due screenshot reali (uno col costo in
+    rosso, uno in bianco) prima di essere adottati."""
     cx, cy = button_center
     ox, oy = WALL_COST_LABEL_OFFSET
     hw, hh = WALL_COST_LABEL_SIZE
@@ -546,28 +904,157 @@ def deselect_all_bb():
     time.sleep(1.0)
 
 
-def _scroll_to_wall_entry():
-    """Identico a _scroll_to_wall_entry() del villaggio primario: scorre
-    la tendina finché non trova la PRIMA voce 'Muro' (qualunque sia il suo
-    costo/xN - vedi commento generale sopra sul perché non si cerca la più
-    economica). Ritorna il centro della voce trovata, o None."""
-    for _ in range(WALL_MAX_SCROLL_ATTEMPTS):
+def _close_wall_panel():
+    """Chiude qualunque pannello/tendina mura aperta toccando una zona
+    rocciosa vuota fuori dalla base (WALL_EMPTY_MAP_POINT) - più affidabile
+    di deselect_all_bb() per uso ripetuto (vedi commento sulla costante)."""
+    adb_tap(*WALL_EMPTY_MAP_POINT)
+    time.sleep(1.2)
+
+
+def _find_wall_entries(frame):
+    """Trova tutte le voci 'Muro' visibili nella tendina (regione
+    WALL_DROPDOWN_REGION) nella schermata corrente. Per ognuna ritorna il
+    centro (x, y) e una "firma" testuale - il suffisso "xN" che compare
+    subito alla sua destra sulla stessa riga (es. "x36", "x130"), o ""
+    se non c'è suffisso (un solo muro rimasto a quel livello).
+
+    La firma NON dipende dalla posizione di scroll (a differenza di "y") -
+    permette di ritrovare la STESSA voce fisica in modo affidabile anche
+    dopo aver richiuso e riaperto la tendina, senza dover contare gli
+    swipe per tornare in un punto preciso. Necessario perché verificato
+    dal vivo l'8/8/2026 che lo scroll NON è riproducibile con precisione
+    sufficiente: ripetere lo stesso numero di swipe da una tendina appena
+    riaperta può arrivare anche una riga intera più in là o più in qua
+    (rischio concreto quando più voci 'Muro' sono adiacenti, come visto
+    dal vivo lo stesso giorno - 3 voci a distanza di una sola riga l'una
+    dall'altra), causando selezioni sbagliate e comportamento erratico."""
+    l, t, w, h = WALL_DROPDOWN_REGION["left"], WALL_DROPDOWN_REGION["top"], WALL_DROPDOWN_REGION["width"], WALL_DROPDOWN_REGION["height"]
+    crop = frame[t:t + h, l:l + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    data = pytesseract.image_to_data(mask, config="--oem 3 --psm 6", output_type=pytesseract.Output.DICT)
+    n = len(data["text"])
+    results = []
+    for i in range(n):
+        word = data["text"][i]
+        if "muro" not in word.lower():
+            continue
+        cx = l + data["left"][i] + data["width"][i] // 2
+        cy = t + data["top"][i] + data["height"][i] // 2
+        my = data["top"][i] + data["height"][i] // 2
+        mx_right = data["left"][i] + data["width"][i]
+        suffix = ""
+        for j in range(i + 1, min(i + 3, n)):
+            w2 = data["text"][j].strip()
+            if not w2:
+                continue
+            y2c = data["top"][j] + data["height"][j] // 2
+            x2 = data["left"][j]
+            if abs(y2c - my) <= 15 and 0 <= x2 - mx_right <= 60 and re.match(r"^[xX]\d{1,4}$", w2):
+                suffix = w2.lower()
+            break
+        results.append({"x": cx, "y": cy, "suffix": suffix})
+    return results
+
+
+def _scan_all_wall_entries():
+    """Scorre l'INTERA tendina 'Miglioramenti' dalla cima fino in fondo
+    (WALL_LIST_MAX_SCROLL_STEPS swipe fissi), raccogliendo OGNI voce
+    'Muro' distinta trovata (per firma - vedi _find_wall_entries), sparse
+    in punti diversi della lista e non ordinate per costo/livello (vedi
+    commento generale sopra try_wall_upgrade). Assume che la tendina sia
+    già aperta e in cima.
+
+    Deduplica per firma (non per posizione - lo swipe usato è piccolo
+    apposta per non saltare mai una voce, quindi la stessa voce fisica
+    ricompare quasi sempre in più schermate consecutive che si
+    sovrappongono): la prima comparsa di ogni firma viene tenuta, le altre
+    scartate. Il caso "senza suffisso" (un solo muro rimasto a quel
+    livello) non si deduplica altrettanto bene - ogni comparsa è trattata
+    come potenzialmente distinta - ma nell'account attuale esiste sempre
+    e solo una voce del genere per volta, quindi comporta solo qualche
+    rilettura extra innocua, non una scelta sbagliata.
+
+    Ritorna una lista di dict {"x": int, "y": int, "suffix": str} (x/y
+    solo informativi, per il conteggio - la voce viene sempre ritrovata
+    davvero via _find_wall_by_signature prima di ogni interazione)."""
+    entries = []
+    seen_signatures = set()
+    for step in range(WALL_LIST_MAX_SCROLL_STEPS):
         frame = adb_screenshot()
-        center = _find_text_center(frame, WALL_DROPDOWN_REGION, "Muro")
-        if center:
-            return center
+        for e in _find_wall_entries(frame):
+            key = e["suffix"] if e["suffix"] else f"_senza_suffisso_{step}"
+            if key in seen_signatures:
+                continue
+            seen_signatures.add(key)
+            entries.append(e)
+        (x1, y1), (x2, y2) = WALL_DROPDOWN_SCROLL
+        adb_swipe(x1, y1, x2, y2, duration_ms=600)
+        time.sleep(1.0)
+    return entries
+
+
+def _find_wall_by_signature(signature, max_attempts=WALL_MAX_SCROLL_ATTEMPTS):
+    """Cerca una voce 'Muro' specifica (identificata dalla sua firma, es.
+    "x36", o "" per l'unico muro senza suffisso) scorrendo dall'alto -
+    tendina già aperta e in cima. A differenza di un riposizionamento
+    "alla cieca" per conteggio di swipe, cerca sempre il contenuto vero
+    via OCR fresco ad ogni tentativo: non risente della deriva dello
+    scroll (vedi _find_wall_entries). Ritorna il centro (x, y) della voce
+    trovata, o None se non trovata entro `max_attempts` scroll."""
+    for _ in range(max_attempts):
+        frame = adb_screenshot()
+        for e in _find_wall_entries(frame):
+            if e["suffix"] == signature:
+                return (e["x"], e["y"])
         (x1, y1), (x2, y2) = WALL_DROPDOWN_SCROLL
         adb_swipe(x1, y1, x2, y2, duration_ms=600)
         time.sleep(1.0)
     return None
 
 
+def _read_wall_level(frame):
+    """Legge il livello dal titolo grande che compare sopra i pulsanti
+    dopo aver selezionato una voce ('Muro (liv. N)', font grande e pulito,
+    niente separatori delle migliaia - molto più affidabile del testo dei
+    costi, che soffre del bug delle "cifre fantasma" già documentato altrove
+    in questo file). Calibrato dal vivo il 2026-08-08 su 4 livelli reali
+    diversi (3, 4, 5, 6): soglia 195 + upscale 3x + psm 6 ha letto tutti e
+    4 correttamente (altre combinazioni soglia/scala/psm provate fallivano
+    su almeno un caso). Ritorna il livello (int) o None se non riesce a
+    leggerlo o se il numero letto è fuori da un range plausibile (vedi
+    WALL_LEVEL_MAX_PLAUSIBLE) - scoperto dal vivo il 2026-08-08 che a volte
+    l'etichetta fluttuante con lo stesso testo mostrata sulla mappa accanto
+    al muro selezionato (posizione variabile, dipende da dove si trova
+    fisicamente quel muro) finiva anch'essa nel crop e confondeva l'OCR,
+    producendo letture chiaramente sbagliate (es. "23", "43") - uno scarto
+    per range implausibile è un filtro semplice e sicuro (nel dubbio,
+    tratta come illeggibile e salta quella voce, non sceglierla mai)."""
+    l, t = WALL_LEVEL_TITLE_REGION["left"], WALL_LEVEL_TITLE_REGION["top"]
+    w, h = WALL_LEVEL_TITLE_REGION["width"], WALL_LEVEL_TITLE_REGION["height"]
+    crop = frame[t:t + h, l:l + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 195, 255, cv2.THRESH_BINARY)
+    big = cv2.resize(mask, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    text = pytesseract.image_to_string(big, config="--oem 3 --psm 6").strip()
+    m = re.search(r"[il1]iv[.:;,']*\s*[.:;,']*\s*(\d{1,2})", text, re.IGNORECASE)
+    if not m:
+        return None
+    level = int(m.group(1))
+    if level < 1 or level > WALL_LEVEL_MAX_PLAUSIBLE:
+        return None
+    return level
+
+
 def try_wall_upgrade():
-    """Un giro di upgrade mura nel Villaggio Costruttori: apre la tendina,
-    trova la prima voce 'Muro', la seleziona, poi aggiunge mura al batch
-    una alla volta ("Aggiungi mura +1", mai +10 - stessa scelta esplicita
-    del villaggio primario) finché il costo in oro non diventa rosso
-    (fondi insufficienti), infine conferma il pagamento.
+    """Un giro di upgrade mura nel Villaggio Costruttori: scansiona TUTTA
+    la tendina 'Miglioramenti', legge il livello reale di ogni voce 'Muro'
+    trovata (vedi commento generale sopra sul perché non basta più "la
+    prima trovata"), seleziona quella al livello più basso, poi aggiunge
+    mura al batch una alla volta ("Aggiungi mura +1", mai +10 - stessa
+    scelta esplicita del villaggio primario) finché il costo in oro non
+    diventa rosso (fondi insufficienti), infine conferma il pagamento.
 
     A differenza di try_wall_upgrade() nel villaggio primario: valuta
     sempre e solo oro (nessuna scelta tra due valute, l'Anello da mura non
@@ -575,25 +1062,107 @@ def try_wall_upgrade():
     istantaneo). Ritorna True se ha confermato un upgrade, False se ha
     saltato per qualunque motivo (nessuna eccezione sollevata: l'obiettivo
     è che un fallimento qui non comprometta il ciclo di attacco normale).
+
+    Controllo di sicurezza aggiunto il 2026-08-08 (richiesto esplicitamente
+    dall'utente dopo aver visto dal vivo un giro precedente comportarsi in
+    modo erratico): verifica che il gioco sia davvero sul Villaggio
+    Costruttori PRIMA di aprire la tendina e di nuovo dopo aver scelto la
+    voce da migliorare - se per qualunque motivo il villaggio risulta
+    cambiato nel frattempo (es. un tap finito fuori bersaglio ha toccato la
+    barca), il giro viene interrotto subito con un avviso Telegram invece
+    di continuare a operare alla cieca sullo schermo sbagliato.
     """
-    print("[MURA] Apro la tendina miglioramenti...")
+    if detect_village_type() != "costruttore":
+        print("[MURA] Non risulto sul Villaggio Costruttori, salto per sicurezza (nessuna azione).")
+        send_telegram("⚠️ Villaggio Costruttori: upgrade mura saltato, il gioco non risultava sul villaggio giusto prima di iniziare.")
+        return False
+
+    print("[MURA] Apro la tendina e scansiono tutte le voci 'Muro'...")
     adb_tap(*BUILDER_BADGE_POINT_BB)
     time.sleep(1.5)
 
-    wall_center = _scroll_to_wall_entry()
-    if not wall_center:
+    entries = _scan_all_wall_entries()
+    if not entries:
         print("[MURA] Voce 'Muro' non trovata al primo giro, riprovo riaprendo la tendina...")
         adb_tap(*BUILDER_BADGE_POINT_BB)
         time.sleep(1.0)
         adb_tap(*BUILDER_BADGE_POINT_BB)
         time.sleep(1.5)
-        wall_center = _scroll_to_wall_entry()
-    if not wall_center:
+        entries = _scan_all_wall_entries()
+    if not entries:
         print("[MURA] Non ho trovato nessuna voce 'Muro' nella tendina, salto.")
-        deselect_all_bb()
+        _close_wall_panel()
         return False
 
-    adb_tap(*wall_center)
+    print(f"[MURA] Trovate {len(entries)} voci 'Muro' distinte, leggo il livello di ognuna...")
+    best = None  # (level, signature)
+    for i, entry in enumerate(entries):
+        signature = entry["suffix"]
+        label = signature if signature else "senza suffisso"
+
+        if not signature:
+            # L'unico muro rimasto a un dato livello (nessun suffisso "xN",
+            # quindi nessun gruppo da cui aggiungerne altri) non si può
+            # comprare con questo flusso: scoperto dal vivo il 2026-08-08
+            # che "Migliora ancora" su una voce del genere non apre affatto
+            # la modalità batch (il gioco probabilmente non ha nulla da
+            # "aggiungere" con un solo muro disponibile) - il pannello resta
+            # identico e i controlli sotto abortirebbero comunque senza
+            # spendere nulla, ma inutilmente dopo aver già navigato fin lì.
+            # Si scarta subito, senza nemmeno leggerne il livello: se
+            # capita di essere davvero il livello più basso in assoluto,
+            # quel muro resterà indietro finché non si aggrega a un gruppo
+            # più ampio (es. un altro muro portato allo stesso livello).
+            print(f"[MURA] Voce {i + 1}/{len(entries)} ('{label}'): muro singolo, il batch 'Migliora ancora' non funziona su queste voci - la salto.")
+            continue
+
+        _close_wall_panel()
+        adb_tap(*BUILDER_BADGE_POINT_BB)
+        time.sleep(1.5)
+        found = _find_wall_by_signature(signature)
+        if not found:
+            print(f"[MURA] Voce {i + 1}/{len(entries)} ('{label}'): non più trovata, la ignoro.")
+            continue
+
+        adb_tap(*found)
+        time.sleep(1.5)
+        # Selezionare una voce non chiude la tendina (stesso bug UI di
+        # sempre): ritoccare il badge la chiude senza deselezionare, cosi'
+        # il titolo "Muro (liv. N)" resta visibile e leggibile.
+        adb_tap(*BUILDER_BADGE_POINT_BB)
+        time.sleep(1.5)
+        frame = adb_screenshot()
+        level = _read_wall_level(frame)
+        if level is None:
+            print(f"[MURA] Voce {i + 1}/{len(entries)} ('{label}'): livello illeggibile, la ignoro.")
+            continue
+        print(f"[MURA] Voce {i + 1}/{len(entries)} ('{label}'): livello {level}.")
+        if best is None or level < best[0]:
+            best = (level, signature)
+
+    _close_wall_panel()
+
+    if best is None:
+        print("[MURA] Non sono riuscito a leggere il livello di nessuna voce 'Muro', salto.")
+        return False
+
+    if detect_village_type() != "costruttore":
+        print("[MURA] Non risulto più sul Villaggio Costruttori dopo la scansione, salto per sicurezza.")
+        send_telegram("⚠️ Villaggio Costruttori: upgrade mura interrotto, il villaggio è cambiato durante la scansione.")
+        return False
+
+    best_level, best_signature = best
+    print(f"[MURA] Livello più basso trovato: {best_level}. Procedo con l'upgrade.")
+
+    adb_tap(*BUILDER_BADGE_POINT_BB)
+    time.sleep(1.5)
+    found = _find_wall_by_signature(best_signature)
+    if not found:
+        print("[MURA] La voce scelta non è più disponibile (probabilmente cambiata nel frattempo), salto.")
+        _close_wall_panel()
+        return False
+
+    adb_tap(*found)
     time.sleep(1.5)
 
     # Selezionare una voce non chiude la tendina (stesso bug UI del
@@ -602,13 +1171,22 @@ def try_wall_upgrade():
     adb_tap(*BUILDER_BADGE_POINT_BB)
     time.sleep(1.5)
 
-    # Selezione singola: 4 pulsanti (Info | Migliora ancora | Migliora oro |
-    # Migliora anello) o 5 se compare anche "Selez. Riga" - "Migliora
-    # ancora" è sempre il terzultimo in entrambi i casi (stessa posizione
-    # relativa verificata dal vivo il 2026-08-04).
+    # Selezione singola: di solito 4 pulsanti (Info | Migliora ancora |
+    # Migliora oro | Migliora anello) o 5 se compare anche "Selez. Riga" -
+    # "Migliora ancora" è il terzultimo in entrambi i casi (stessa
+    # posizione relativa verificata dal vivo il 2026-08-04). ATTENZIONE:
+    # scoperto dal vivo il 2026-08-08 che una voce puo' offrire ANCHE il
+    # pagamento in elisir (6 pulsanti: Info | Selez.Riga | Migliora ancora
+    # | Migliora oro | Migliora elisir | Migliora anello) - in quel caso
+    # "terzultimo" NON è più "Migliora ancora" ma "Migliora oro" (bug
+    # latente non ancora risolto, di fatto innocuo: se capita, il tap
+    # sbagliato non apre la modalità batch attesa, i controlli sotto non
+    # trovano la barra a 5 pulsanti e il giro viene saltato senza spendere
+    # nulla - vedi anche il commento generale in cima sul perché questo
+    # scenario è raro con la scelta "livello più basso").
     buttons = _find_action_bar_buttons_retry(4, debug_name="bb_selezione")
     if len(buttons) < 4:
-        print(f"[MURA] Barra pulsanti inattesa ({len(buttons)} invece di 4-5), salto.")
+        print(f"[MURA] Barra pulsanti inattesa ({len(buttons)} invece di 4-6), salto.")
         deselect_all_bb()
         return False
 
@@ -617,22 +1195,25 @@ def try_wall_upgrade():
     time.sleep(1.2)
 
     # Modalità batch dopo "Migliora ancora": Togli mura -1 | Aggiungi +10 |
-    # Aggiungi +1 | Migliora oro | Migliora anello (stessa griglia a 5
-    # posizioni del villaggio primario, verificata dal vivo).
+    # Aggiungi +1 | Migliora oro | (Migliora elisir, se presente) | Migliora
+    # anello - "Migliora oro" è sempre il primo pulsante di pagamento,
+    # terza posizione da sinistra (indice 3), qualunque sia il numero
+    # totale di pulsanti (verificato dal vivo anche sulla voce a 6
+    # pulsanti del 2026-08-08).
     buttons = _find_action_bar_buttons_retry(5, debug_name="bb_batch")
     if len(buttons) < 5:
-        print(f"[MURA] Barra pulsanti batch inattesa ({len(buttons)} invece di 5), ritento 'Migliora ancora'...")
+        print(f"[MURA] Barra pulsanti batch inattesa ({len(buttons)} invece di 5-6), ritento 'Migliora ancora'...")
         adb_tap(*ancora_center)
         time.sleep(1.5)
         buttons = _find_action_bar_buttons_retry(5, debug_name="bb_batch")
     if len(buttons) < 5:
-        print(f"[MURA] Barra pulsanti batch ancora inattesa ({len(buttons)} invece di 5), salto.")
+        print(f"[MURA] Barra pulsanti batch ancora inattesa ({len(buttons)} invece di 5-6), salto.")
         deselect_all_bb()
         return False
 
     add_one_point = buttons[2]
     remove_one_point = buttons[0]
-    pay_point = buttons[3]  # sempre oro, mai l'Anello da mura (vedi commento in cima)
+    pay_point = buttons[3]  # sempre oro, mai l'Anello da mura o l'elisir (vedi commento in cima)
 
     frame = adb_screenshot()
     if _wall_cost_is_red(frame, pay_point):
@@ -653,7 +1234,7 @@ def try_wall_upgrade():
     else:
         print(f"[MURA] Raggiunto il tetto di sicurezza di {WALL_MAX_ADD_TAPS} mura senza mai vedere il costo in rosso.")
 
-    print(f"[MURA] Punto a {target_count} mura, pago in oro.")
+    print(f"[MURA] Punto a {target_count} mura di livello {best_level}, pago in oro.")
 
     buttons = _find_action_bar_buttons_retry(5, debug_name="bb_dopo_aggiungi")
     if len(buttons) < 5:
@@ -690,8 +1271,8 @@ def try_wall_upgrade():
         deselect_all_bb()
         return False
 
-    print(f"[MURA] Confermato upgrade di {target_count} mura, pagato in oro.")
-    send_telegram(f"🧱 Villaggio Costruttori: upgrade di {target_count} mura (oro).")
+    print(f"[MURA] Confermato upgrade di {target_count} mura di livello {best_level}, pagato in oro.")
+    send_telegram(f"🧱 Villaggio Costruttori: upgrade di {target_count} mura di livello {best_level} (oro).")
 
     deselect_all_bb()
     time.sleep(1.0)
@@ -777,8 +1358,11 @@ def wait_for_next_screen(max_wait=BATTLE_WAIT_SECONDS, poll_interval=BATTLE_POLL
     """Aspetta che il raid corrente finisca, controllando attivamente lo
     schermo invece di dormire un tempo fisso. Ritorna:
     - "next_raid" appena legge "La battaglia inizia tra:" (il raid
-      successivo è pronto - si può schierare SUBITO, il gioco lo permette
-      anche durante questo countdown, non serve aspettare che scada);
+      successivo esiste - ATTENZIONE (v0.20): questa è ancora una
+      schermata di anteprima/scouting, NON si può schierare subito
+      nonostante quanto assunto fino alla v0.19 - il chiamante deve
+      aspettare che il banner diventi "termina" prima di schierare, vedi
+      run_double_raid());
     - "results" appena rileva la schermata finale (niente secondo raid, il
       primo non ha raggiunto il 100%);
     - "timeout" se `max_wait` scade prima (rete di sicurezza).
@@ -802,16 +1386,33 @@ def run_double_raid():
     (con controllo attivo) che finisca, ripete lo schieramento per il
     secondo raid se si è sbloccato, aspetta di nuovo, torna al villaggio.
     """
-    # Rete di sicurezza: se un popup "Bonus stella!" del ciclo precedente è
-    # rimasto aperto più a lungo del previsto, questo tap lo chiude prima di
-    # provare "Attacco!" (altrimenti il tap su ATTACK_BUTTON cade a vuoto
-    # fuori dal popup e il ciclo si blocca) - a vuoto se non serve.
-    adb_tap(*STAR_BONUS_OK_BUTTON)
-    time.sleep(0.3)
-
+    # v0.17→v0.18: qui c'era un tap "di sicurezza" su STAR_BONUS_OK_BUTTON
+    # per chiudere un eventuale popup "Bonus stella!" rimasto aperto dal
+    # ciclo precedente. Rimosso del tutto (non reso condizionale su
+    # is_home_screen() - vedi perché più sotto, stesso motivo per il tap
+    # gemello a fine ciclo): _ensure_home_or_recover() a fine ciclo garantisce
+    # già di ripartire da una home pulita, quindi non serve più.
     print("[ATTACK] Tocco 'Attacco!'...")
     adb_tap(*ATTACK_BUTTON)
     time.sleep(1.2)
+
+    # v0.21: se il tap su "Attacco!" non ha aperto nulla (siamo ancora sulla
+    # home), non procedere alla cieca con Cerca!/deploy_wave() - prima
+    # controlla se il vero motivo e' il dialog "connessione interrotta"
+    # (vedi _check_reconnect_dialog).
+    if is_home_screen():
+        if _check_reconnect_dialog():
+            raise RuntimeError("Dialog 'connessione interrotta per inattività' rilevato: serve intervento manuale, non riprovo alla cieca.")
+        print("[ATTACK] 'Attacco!' non sembra essersi aperto (popup imprevisto?), riprovo...")
+        adb_tap(*ATTACK_BUTTON)
+        time.sleep(1.5)
+        if is_home_screen():
+            if _check_reconnect_dialog():
+                raise RuntimeError("Dialog 'connessione interrotta per inattività' rilevato: serve intervento manuale, non riprovo alla cieca.")
+            debug_path = "debug_attack_stuck.png"
+            cv2.imwrite(debug_path, adb_screenshot())
+            send_telegram_photo(debug_path, "⚠️ Non riesco ad aprire la schermata di attacco (forse un popup blocca il villaggio). Salto un ciclo - ecco cosa vedo io in questo momento.")
+            raise RuntimeError("'Attacco!' non si apre dopo due tentativi.")
 
     print("[ATTACK] Tocco 'Cerca!'...")
     adb_tap(*SEARCH_BUTTON)
@@ -830,7 +1431,38 @@ def run_double_raid():
     if outcome == "results":
         print("[RAID 2/2] Niente secondo raid (il primo non ha raggiunto il 100%).")
     else:
-        print("[RAID 2/2] Secondo raid pronto, schiero subito...")
+        # v0.19 (primo tentativo, insufficiente): bug segnalato dall'utente -
+        # a volte, solo sul secondo raid, la PRIMA unità della barra (spesso
+        # una strega) non veniva schierata. Ipotesi iniziale: una breve
+        # attesa fissa (1.5s) per lasciare "assestare" lo schermo. Smentita
+        # dal vivo poche battaglie dopo: un intero raid ha schierato quasi
+        # zero truppe, non solo la prima.
+        #
+        # v0.20, causa vera trovata dal vivo (confronto screenshot): "la
+        # battaglia INIZIA tra: Ns" (rilevato da wait_for_next_screen come
+        # segnale "prossimo raid pronto") è ancora una schermata di ANTEPRIMA
+        # dell'avversario - bottone "Termina battaglia", camera larga in
+        # stile scouting, NESSUNA truppa/pannello "Danno complessivo" - non
+        # la vera schermata di battaglia (quella ha "Resa" in basso a
+        # sinistra, la camera vicina al bordo villaggio dopo il pan di
+        # deploy_wave(), e mostra "la battaglia TERMINA tra"). Il countdown
+        # "inizia" osservato dal vivo è arrivato fino a 55s ancora da
+        # scadere, molto più lungo del margine che qualunque attesa fissa
+        # breve potrebbe coprire - il vecchio commento su questa funzione
+        # ("si può schierare subito, anche durante quel countdown") era
+        # semplicemente sbagliato per questa fase. Fix: aspettare
+        # attivamente (stesso meccanismo OCR di wait_for_next_screen, non
+        # un'attesa a tempo fisso) che il banner passi a "termina" - cioè
+        # che la battaglia vera sia davvero iniziata - prima di schierare.
+        print("[RAID 2/2] Secondo raid pronto, aspetto che la battaglia vera cominci...")
+        started = time.monotonic()
+        while time.monotonic() - started < RAID2_PREVIEW_MAX_WAIT:
+            if _read_top_banner_state() == "termina":
+                break
+            time.sleep(BATTLE_POLL_INTERVAL)
+        else:
+            print(f"[RAID 2/2] Tetto massimo di {RAID2_PREVIEW_MAX_WAIT:.0f}s raggiunto, schiero comunque.")
+        print("[RAID 2/2] Schiero...")
         deploy_wave()
         print("[RAID 2/2] Aspetto la fine della battaglia (controllo attivo)...")
         wait_for_next_screen()
@@ -838,16 +1470,45 @@ def run_double_raid():
     print("[ATTACK] Torno al villaggio...")
     adb_tap(*RETURN_HOME_BUTTON)
     time.sleep(1.6)
-    print("[ATTACK] Chiudo eventuale popup 'Bonus stella!' (tap a vuoto se non c'è)...")
-    adb_tap(*STAR_BONUS_OK_BUTTON)
-    time.sleep(2.5)
-    # Il popup a volte compare con un ritardo maggiore del previsto (visto
-    # dal vivo: il primo tap è arrivato troppo presto, il popup è rimasto
-    # aperto e ha bloccato il tap "Attacco!" del ciclo successivo, caduto a
-    # vuoto fuori dal popup). Secondo tentativo dopo un'attesa più lunga -
-    # a vuoto se non serve.
-    adb_tap(*STAR_BONUS_OK_BUTTON)
-    time.sleep(1.0)
+
+    # v0.17: bug vero trovato dal vivo il 2026-08-09, analizzando ogni tap
+    # con screenshot di debug dopo ognuno (richiesto esplicitamente
+    # dall'utente dopo che il bug si ripresentava nonostante v0.16). Qui
+    # c'era un tap "di sicurezza" su STAR_BONUS_OK_BUTTON (960, 838) per
+    # chiudere un eventuale popup "Bonus stella!", eseguito sempre "a vuoto
+    # se non serve" - ma quel punto è una coordinata sulla MAPPA di gioco,
+    # non un elemento di UI fisso: se in quel momento un muro (o altro
+    # edificio) si trova lì sotto (dipende da dove sta la camera, mai
+    # garantito identico - stesso problema di fondo già documentato per la
+    # barca), il tap apre il suo pannello invece di non fare nulla.
+    # Osservato dal vivo: il primo tap ha aperto il pannello "Muro (liv. 8)",
+    # il secondo tap (stesso punto, sul pannello ora aperto) è caduto sul
+    # pulsante "Migliora" (oro), aprendo un vero dialog di conferma spesa
+    # "Portare al livello 9? 640.000 Oro" - a un tap di distanza da una
+    # spesa reale non voluta (nessuna spesa avvenuta, chiuso in tempo).
+    #
+    # v0.18, correzione della correzione: il primo tentativo di fix (tappare
+    # solo se `not is_home_screen()`) NON ha risolto il problema - risolto
+    # sulla carta ma smentito da un secondo test dal vivo identico subito
+    # dopo il deploy, stesso identico dialog riaperto. Causa: is_home_screen()
+    # stesso può dare un falso negativo per lo stesso motivo di fondo (il
+    # pixel controllato può cadere fuori posto a seconda dello zoom/pan della
+    # camera, già documentato altrove in questo file) - quindi la condizione
+    # "tocca solo se NON risultiamo sulla home" può restare vera anche su una
+    # home già pulita, facendo comunque scattare il tap rischioso. Un
+    # controllo che può sbagliarsi non è una guardia affidabile per un tap
+    # che può costare soldi veri. Fix definitivo: **tap rimosso del tutto**,
+    # sia qui che a inizio ciclo - non è mai stato osservato dal vivo un
+    # vero popup "Bonus stella!" bloccare qualcosa in tutti i test di oggi,
+    # quindi il beneficio era comunque minimo. _ensure_home_or_recover() qui
+    # sotto resta come unica rete di sicurezza, con un punto di recovery
+    # scelto apposta fuori dall'area costruibile (RECOVERY_EMPTY_MAP_POINT) -
+    # non una coordinata che può sovrapporsi a un edificio vero.
+    if not _ensure_home_or_recover():
+        raise RuntimeError(
+            "Non risultiamo su una schermata home dopo il ciclo (popup imprevisto "
+            "bloccato?) - vedi _ensure_home_or_recover()."
+        )
 
 
 COLLECT_ELIXIR_EVERY = 10  # ogni quanti cicli svuotare il carretto elisir
@@ -873,7 +1534,13 @@ def main():
 
     if home_ready:
         print("[VILLAGGIO] Controllo di essere sul Villaggio Costruttori...")
-        switch_to_village("costruttore")
+        if not switch_to_village("costruttore"):
+            send_telegram(
+                "⛔ Villaggio Costruttori: impossibile passare al villaggio giusto "
+                "(tap sulla barca fallito, forse coordinate da ricalibrare). Mi fermo "
+                "invece di attaccare alla cieca sul villaggio sbagliato."
+            )
+            return
     else:
         print("[VILLAGGIO] Non risultiamo su una schermata home dopo l'attesa, salto il controllo villaggio.")
 
