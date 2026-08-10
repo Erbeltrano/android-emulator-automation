@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.12"
+VERSION = "3.14"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -60,6 +60,32 @@ def send_telegram(message: str):
 
     except Exception as e:
         print("[TELEGRAM] Errore Telegram:", e)
+
+
+def send_telegram_photo(path: str, caption: str = ""):
+    """Manda una foto (screenshot) al chat_id, con una didascalia opzionale.
+
+    v3.14: usato quando il bot si arrende su un ciclo per un problema a
+    schermo (es. popup imprevisto che blocca 'Attacco!') - prima l'utente
+    doveva chiedere uno screenshot a parte via Telegram per capire cosa
+    stesse succedendo davvero (scoperto dal vivo il 2026-08-10: senza
+    vedere lo schermo, un messaggio di solo testo puo' sembrare in
+    contraddizione con quel che si vede aprendo un altro screenshot preso
+    in un momento diverso). Allegarlo subito nello stesso messaggio evita
+    quell'ambiguita'.
+    """
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    try:
+        with open(path, "rb") as f:
+            resp = requests.post(
+                url,
+                data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption},
+                files={"photo": f},
+                timeout=20,
+            )
+        print("[TELEGRAM] sendPhoto status:", resp.status_code)
+    except Exception as e:
+        print("[TELEGRAM] Errore invio foto:", e)
 
 # ==========================
 # CONFIGURAZIONE GENERALE
@@ -307,6 +333,39 @@ STORAGE_MAX_TOOLTIP_REGION = {
     "left": 1425, "top": 90, "width": 495, "height": 200,
 }
 STORAGE_FULL_THRESHOLD = 0.92  # oltre questa percentuale della capacita' un deposito e' considerato "pieno"
+STORAGE_LOW_RATIO = 0.5  # sotto questa percentuale della propria capacita' massima, oro/elisir sono
+                          # ancora "scarsi" - non ci si ferma solo perche' l'altra valuta e' gia' piena
+                          # (v3.13, vedi storage_is_full)
+
+# v3.14 (2026-08-10): bug vero trovato dal vivo - l'utente ha segnalato
+# oro/elisir pieni ed elisir nero VUOTO, ma il bot si e' fermato comunque
+# ("depositi quasi pieni"). La protezione per l'elisir nero esisteva già
+# (v3.7/v3.11, vedi storage_is_full) ma si basava su una soglia ASSOLUTA
+# fissa (home_low_dark_elixir, 400.000) invece che sulla vera capacita' del
+# deposito - la stessa classe di bug gia' fixata per oro/elisir il
+# 2026-08-09 (v3.13), mai estesa all'elisir nero. Verificato dal vivo oggi
+# (screenshot reale, tooltip aperto sulla barra elisir nero): la capacita'
+# vera del deposito e' 430.000, e l'elisir nero in casa in quel momento era
+# 38.995 (9%, genuinamente "vuoto") - una soglia assoluta di 400.000 (93%
+# di QUESTA capacita' specifica) puo' sembrare quasi corretta per caso ora,
+# ma smette di funzionare appena il deposito viene potenziato ulteriormente
+# (esattamente il motivo per cui oro/elisir leggono la capacita' dal vivo
+# invece di un numero fisso). Inoltre una soglia assoluta e' vulnerabile a
+# letture OCR "fantasma" (cifra in piu' letta per errore, bug gia' noto e
+# documentato altrove in questo file): con una soglia proporzionale, il
+# controllo di sanita' gia' esistente (il massimo non puo' essere inferiore
+# a quanto c'e' in casa) scarta automaticamente anche queste letture
+# impossibili, cosa che una soglia assoluta non poteva fare.
+#
+# Fix: stessa tecnica di oro/elisir - tooltip "Max" letto dal vivo toccando
+# la barra elisir nero, "pieno" = sopra STORAGE_FULL_THRESHOLD della vera
+# capacita' (non piu' home_low_dark_elixir, lasciato in config solo per
+# compatibilita' con determine_priority_resource() che lo usa per un scopo
+# diverso, a inizio sessione, quando la capacita' vera non serve leggerla).
+DARK_ELIXIR_BAR_POINT = (1750, 265)
+DARK_ELIXIR_MAX_TOOLTIP_REGION = {
+    "left": 1425, "top": 290, "width": 495, "height": 200,
+}
 
 # Barra truppe/eroi in basso: x di ogni slot (y fissa = TROOP_BAR_Y).
 # TROOP_SLOTS sono le truppe, HERO_SLOTS gli eroi (regina, re, gran
@@ -680,6 +739,54 @@ BOAT_TO_PRIMARY_POINT = (1670, 730)               # barca di ritorno, dopo il pa
 VILLAGE_CHECK_REGION = {"left": 600, "top": 0, "width": 700, "height": 15}
 VILLAGE_CHECK_GB_THRESHOLD = 20
 
+# v3.14 (2026-08-10): stesso fix del bot del Villaggio Costruttori (v0.21),
+# applicato qui per prevenzione anche se non e' questo lo script che ha
+# fallito dal vivo oggi - la barca e' lo stesso tipo di oggetto fragile a
+# coordinate fisse (vedi commento sopra su BOAT_TO_BUILDER_PAN/POINT). Prima
+# del tap puntuale, cerca la barca via template matching in una finestra
+# centrata sul punto calibrato: se la trova (anche spostata), tappa la
+# posizione trovata; se non la trova, ricade sul vecchio tap puntuale
+# esatto (nessuna regressione). Non ancora osservato dal vivo un fallimento
+# reale di QUESTA funzione da correggere - miglioramento preventivo, non
+# una riproduzione del bug di oggi (quello era in bot_costruttori.py).
+BOAT_MATCH_SCALES = (0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15)
+BOAT_MATCH_MIN_CONFIDENCE = 0.55
+BOAT_MATCH_SEARCH_MARGIN = 160
+BOAT_TO_BUILDER_REF_FILE = "boat_to_builder_ref.png"
+BOAT_TO_PRIMARY_REF_FILE = "boat_to_primary_ref.png"
+_boat_to_builder_ref = cv2.imread(BOAT_TO_BUILDER_REF_FILE)
+_boat_to_primary_ref = cv2.imread(BOAT_TO_PRIMARY_REF_FILE)
+
+
+def _find_boat(frame, template, around_point, margin=BOAT_MATCH_SEARCH_MARGIN):
+    """Cerca `template` dentro una finestra centrata su `around_point` (+/-
+    margin), provando le scale in BOAT_MATCH_SCALES per tollerare un po' di
+    variazione di zoom. Ritorna il centro assoluto del miglior match se
+    sopra BOAT_MATCH_MIN_CONFIDENCE, altrimenti None (il chiamante ricade
+    sul tap puntuale calibrato)."""
+    if template is None:
+        return None
+    px, py = around_point
+    l = max(0, px - margin)
+    t = max(0, py - margin)
+    r = min(frame.shape[1], px + margin)
+    b = min(frame.shape[0], py + margin)
+    crop = frame[t:b, l:r]
+    th, tw = template.shape[:2]
+    best_val, best_loc, best_size = -1.0, None, None
+    for scale in BOAT_MATCH_SCALES:
+        sw, sh = max(1, int(tw * scale)), max(1, int(th * scale))
+        if sw >= crop.shape[1] or sh >= crop.shape[0]:
+            continue
+        resized = cv2.resize(template, (sw, sh))
+        result = cv2.matchTemplate(crop, resized, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val > best_val:
+            best_val, best_loc, best_size = max_val, max_loc, (sw, sh)
+    if best_val < BOAT_MATCH_MIN_CONFIDENCE:
+        return None
+    return (l + best_loc[0] + best_size[0] // 2, t + best_loc[1] + best_size[1] // 2)
+
 
 def detect_village_type(frame=None):
     """Ritorna 'primario' o 'costruttore' guardando lo schermo attuale.
@@ -714,12 +821,19 @@ def switch_to_village(target, max_attempts=2):
             adb_swipe(BOAT_TO_BUILDER_PAN[0][0], BOAT_TO_BUILDER_PAN[0][1],
                       BOAT_TO_BUILDER_PAN[1][0], BOAT_TO_BUILDER_PAN[1][1])
             time.sleep(0.8)
-            adb_tap(*BOAT_TO_BUILDER_POINT)
+            point, template = BOAT_TO_BUILDER_POINT, _boat_to_builder_ref
         else:
             adb_swipe(BOAT_TO_PRIMARY_PAN[0][0], BOAT_TO_PRIMARY_PAN[0][1],
                       BOAT_TO_PRIMARY_PAN[1][0], BOAT_TO_PRIMARY_PAN[1][1])
             time.sleep(0.8)
-            adb_tap(*BOAT_TO_PRIMARY_POINT)
+            point, template = BOAT_TO_PRIMARY_POINT, _boat_to_primary_ref
+
+        found = _find_boat(adb_screenshot(), template, point)
+        if found is not None:
+            print(f"[VILLAGGIO] Barca trovata via template match a {found} (punto calibrato: {point}).")
+            adb_tap(*found)
+        else:
+            adb_tap(*point)
         time.sleep(4.0)
 
     # v3.9: il controllo veniva fatto solo PRIMA di ogni tap, mai dopo
@@ -867,29 +981,61 @@ def read_home_resources():
     }
 
 
-def read_storage_max(bar_point, debug_name):
-    """Legge la capacita' massima del deposito (oro o elisir) aprendo il
-    tooltip che compare toccando la barra della risorsa in alto a destra
-    (mostra "Max: N", "Produzione oraria: N", "In tesoreria: N"). Non e' un
-    valore fisso nel codice perche' cambia ogni volta che si potenzia un
-    deposito. Il tap sullo stesso punto e' un toggle: un secondo tap chiude
-    di nuovo il tooltip, cosi' non si lascia in giro nulla di aperto.
+def read_storage_max(bar_point, debug_name, tooltip_region=None):
+    """Legge la capacita' massima del deposito (oro, elisir o elisir nero)
+    aprendo il tooltip che compare toccando la barra della risorsa in alto a
+    destra (mostra "Max: N", "Produzione oraria: N", "In tesoreria: N"). Non
+    e' un valore fisso nel codice perche' cambia ogni volta che si potenzia
+    un deposito. Il tap sullo stesso punto e' un toggle: un secondo tap
+    chiude di nuovo il tooltip, cosi' non si lascia in giro nulla di aperto.
+
+    `tooltip_region` di default (oro/elisir, le due barre piu' in alto)
+    e' STORAGE_MAX_TOOLTIP_REGION - la barra elisir nero (piu' in basso)
+    apre il tooltip piu' in basso a sua volta, serve una regione diversa
+    (DARK_ELIXIR_MAX_TOOLTIP_REGION, verificata dal vivo il 2026-08-10).
     """
+    if tooltip_region is None:
+        tooltip_region = STORAGE_MAX_TOOLTIP_REGION
     adb_tap(*bar_point)
     time.sleep(1.0)
     frame = adb_screenshot()
-    l, t = STORAGE_MAX_TOOLTIP_REGION["left"], STORAGE_MAX_TOOLTIP_REGION["top"]
-    w, h = STORAGE_MAX_TOOLTIP_REGION["width"], STORAGE_MAX_TOOLTIP_REGION["height"]
+    l, t = tooltip_region["left"], tooltip_region["top"]
+    w, h = tooltip_region["width"], tooltip_region["height"]
     crop = frame[t:t + h, l:l + w]
     text = pytesseract.image_to_string(crop, config="--psm 6")
     cv2.imwrite(f"debug_storage_max_{debug_name}.png", crop)
     adb_tap(*bar_point)
     time.sleep(0.8)
 
-    match = re.search(r"Max[^\d]*([\d.,\s]+)", text)
-    if not match:
+    # v3.14: bug reale trovato dal vivo sul tooltip dell'elisir nero - il
+    # vecchio regex r"Max[^\d]*([\d.,\s]+)" si fermava a meta' numero
+    # ("430" invece di "430000") perche' Tesseract a volte inserisce un
+    # carattere estraneo tra i gruppi di cifre (osservato dal vivo: "Max:
+    # ,430-000))|_" - il trattino non fa parte della classe di caratteri
+    # tollerati dal vecchio regex, quindi il resto veniva scartato).
+    # Probabile causa: la barra elisir nero ha il contatore gemme "1.560"
+    # che si sovrappone visivamente al tooltip (non capita con oro/elisir,
+    # tooltip in una zona piu' libera). Fix piu' robusto: invece di provare
+    # a enumerare ogni possibile carattere estraneo, si prende l'intera riga
+    # che contiene "Max" e si scartano TUTTI i caratteri non numerici da
+    # quella riga sola - tollera qualunque simbolo estraneo Tesseract possa
+    # inserire in mezzo, non solo quelli previsti in anticipo.
+    max_line = next((line for line in text.splitlines() if "max" in line.lower()), None)
+    if max_line is None:
         return None
-    digits = re.sub(r"[^\d]", "", match.group(1))
+    # v3.14 (raffinato dopo test dal vivo su Windows, non solo sul Mac -
+    # Tesseract non da' lo stesso identico output su piattaforme diverse per
+    # questo stesso identico screenshot): oltre al trattino in mezzo alle
+    # cifre (visto dal Mac: "Max:,430-000))|_"), su Windows e' comparsa
+    # anche una cifra estranea PRIMA di "Max" sulla stessa riga (es. "2
+    # Max:,430-000) |" - probabile artefatto del bordo del tooltip letto
+    # come una cifra). Prendere tutte le cifre della riga intera avrebbe
+    # incluso anche quella, gonfiando il risultato (430000 -> 2430000).
+    # Si prende invece solo la sottostringa DA "max" in poi sulla riga,
+    # cosi' si tollera qualunque simbolo estraneo TRA le cifre (il trattino)
+    # senza pero' raccogliere cifre estranee PRIMA della parola "Max".
+    idx = max_line.lower().index("max")
+    digits = re.sub(r"[^\d]", "", max_line[idx:])
     return int(digits) if digits else None
 
 
@@ -913,12 +1059,19 @@ def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     piene" l'elisir restava sprecato attacco dopo attacco in attesa che
     anche l'oro si riempisse.
 
-    L'elisir nero invece e' un AND, non un OR con gli altri due: non ha una
-    capacita' massima calibrata (nessun tooltip "Max" letto per lui), quindi
-    "pieno" qui significa solo "sopra la soglia che l'utente considera
-    sufficiente" (home_low_dark_elixir, di default 400.000 - stesso campo
-    gia' usato da determine_priority_resource() per capire quando l'elisir
-    nero scarseggia, riusato qui con lo stesso significato). Bug reale
+    ECCEZIONE (v3.13, bug vero trovato dal vivo il 2026-08-09): se la
+    valuta NON piena e' sotto STORAGE_LOW_RATIO (50%) della propria
+    capacita' massima, NON ci si ferma anche se l'altra e' gia' piena.
+    Scoperto dal vivo: elisir pieno ma oro a 7/22 milioni (32%,
+    "praticamente vuoto" per l'utente) - il bot si fermava comunque, senza
+    mai dare tempo all'oro di risalire. Stessa filosofia di protezione gia'
+    esistente sotto per l'elisir nero, estesa qui a oro/elisir tra loro (con
+    una soglia proporzionale alla capacita' vera, non un numero assoluto
+    come home_low_dark_elixir - vedi commento su STORAGE_LOW_RATIO per
+    perche' i campi home_low_gold/home_low_elixir gia' in config non erano
+    adatti a questo scopo).
+
+    L'elisir nero invece e' un AND, non un OR con gli altri due: bug reale
     trovato il 2026-08-02: l'utente aveva l'elisir nero vuoto ma il bot si
     fermava comunque non appena oro/elisir normale erano pieni, senza mai
     dargli la possibilita' di accumularne - perche' storage_is_full()
@@ -926,6 +1079,14 @@ def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     non sono mai considerati "pieni" (si continua a farmare, fino al tetto
     di sicurezza sul numero di attacchi/durata sessione se il farming di
     elisir nero e' lento) indipendentemente da oro/elisir.
+
+    v3.14: "sotto soglia" per l'elisir nero significa ora la stessa cosa che
+    per oro/elisir - sotto STORAGE_FULL_THRESHOLD della vera capacita' letta
+    dal tooltip (DARK_ELIXIR_BAR_POINT), non piu' un numero assoluto fisso
+    (home_low_dark_elixir, rimasto in config solo per
+    determine_priority_resource(), usato a inizio sessione con un significato
+    diverso). Vedi il commento sulla costante per il bug reale che questo
+    risolve.
 
     Se la lettura della capacita' massima di oro/elisir fallisce (OCR/tooltip
     inatteso), ritorna False per sicurezza: meglio affidarsi al tetto di
@@ -954,11 +1115,32 @@ def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     gold_ratio = home["gold"] / gold_max
     elixir_ratio = home["elixir"] / elixir_max
     print(f"[STORAGE] Oro {home['gold']}/{gold_max} ({gold_ratio:.0%}), Elisir {home['elixir']}/{elixir_max} ({elixir_ratio:.0%}).")
-    gold_or_elixir_full = gold_ratio >= threshold or elixir_ratio >= threshold
-    if not gold_or_elixir_full:
+    gold_full = gold_ratio >= threshold
+    elixir_full = elixir_ratio >= threshold
+    if not (gold_full or elixir_full):
         return False
 
-    dark_low = _config["home_low_dark_elixir"]
+    # Bug vero trovato dal vivo il 2026-08-09: elisir (e elisir nero) pieni
+    # ma oro a 7/22 milioni (32%, "praticamente vuoto" per l'utente) - il
+    # bot si fermava comunque (bastava una valuta piena, vedi sopra) senza
+    # mai dare tempo all'oro di risalire. Tentativo iniziale con
+    # home_low_gold/home_low_elixir (gia' in config) scartato subito: quei
+    # campi sono soglie assolute piccole (default 300.000) pensate per
+    # determine_priority_resource() a inizio sessione su un account con
+    # depositi ancora piccoli - su un deposito da 22 milioni 300.000 e'
+    # comunque "quasi vuoto" nello stesso senso lamentato dall'utente, quindi
+    # non avrebbero protetto questo caso reale. Serve invece una soglia
+    # proporzionale alla capacita' vera del deposito (STORAGE_LOW_RATIO):
+    # se la valuta NON piena e' sotto questa percentuale della propria
+    # capacita' massima, vale la pena continuare a farmare anche se l'altra
+    # e' gia' piena, invece di fermarsi e sprecare l'occasione.
+    if gold_full and not elixir_full and elixir_ratio < STORAGE_LOW_RATIO:
+        print(f"[STORAGE] Elisir ancora scarso ({elixir_ratio:.0%}), continuo a farmare anche se l'oro e' pieno.")
+        return False
+    if elixir_full and not gold_full and gold_ratio < STORAGE_LOW_RATIO:
+        print(f"[STORAGE] Oro ancora scarso ({gold_ratio:.0%}), continuo a farmare anche se l'elisir e' pieno.")
+        return False
+
     dark_elixir = home.get("dark_elixir")
     if dark_elixir is None:
         # Lettura fallita: stessa scelta di sicurezza usata sopra per
@@ -971,8 +1153,25 @@ def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
         # su 400.000 di soglia, solo perche' quella singola lettura era
         # fallita ("lettura fantasma").
         return False
-    print(f"[STORAGE] Elisir nero {dark_elixir}/{dark_low} (soglia minima prima di considerarmi 'pieno').")
-    if dark_elixir < dark_low:
+
+    # v3.14: come oro/elisir, "pieno" ora significa sopra STORAGE_FULL_THRESHOLD
+    # della vera capacita' letta dal tooltip - non piu' una soglia assoluta
+    # fissa (vedi commento sulla costante DARK_ELIXIR_BAR_POINT per il bug
+    # reale che questo risolve). Stessa scelta di sicurezza delle altre due
+    # valute: se la lettura del massimo fallisce o risulta inverosimile
+    # (minore di quanto gia' in casa - es. una lettura OCR "fantasma" con una
+    # cifra di troppo), NON si considera pieno, si continua a farmare.
+    dark_elixir_max = read_storage_max(DARK_ELIXIR_BAR_POINT, "dark_elixir", DARK_ELIXIR_MAX_TOOLTIP_REGION)
+    if not dark_elixir_max:
+        print("[STORAGE] Lettura capacita' massima elisir nero non riuscita, continuo a farmare anche se oro/elisir sono pieni.")
+        return False
+    if dark_elixir_max < dark_elixir:
+        print(f"[STORAGE] Lettura capacita' elisir nero inverosimile (max {dark_elixir_max}, inferiore a quanto gia' in casa: {dark_elixir}), scarto e continuo a farmare.")
+        return False
+
+    dark_elixir_ratio = dark_elixir / dark_elixir_max
+    print(f"[STORAGE] Elisir nero {dark_elixir}/{dark_elixir_max} ({dark_elixir_ratio:.0%}).")
+    if dark_elixir_ratio < threshold:
         print("[STORAGE] Elisir nero ancora sotto soglia, continuo a farmare anche se oro/elisir sono pieni.")
         return False
     return True
@@ -1001,6 +1200,61 @@ def _find_text_center(frame, region, needle):
             cy = t + data["top"][i] + data["height"][i] // 2
             return (cx, cy)
     return None
+
+
+# v3.14 (2026-08-10): causa vera trovata dal vivo del bug "Attacco! non
+# sembra essersi aperto (popup imprevisto?)" segnalato dall'utente
+# ("vedevo che stava attaccando ma diceva che non poteva attaccare perche'
+# aveva una schermata davanti"). Lasciando il gioco inattivo per un po'
+# (successo mentre indagavo su altro, dal vivo sullo stesso account) e'
+# comparso il vero dialog nativo di Clash of Clans "C'e' nessuno? La
+# connessione e' stata interrotta per inattivita'" con un pulsante
+# "RICARICA GIOCO" - un dialog modale che assorbe il tap su ATTACK_BUTTON
+# senza far succedere nulla, ma NON copre il pulsante "Attacco!" sottostante
+# (resta visibile, ancora arancione), quindi is_home_screen() continua a
+# leggere "siamo in home" anche con il dialog aperto sopra: il vecchio
+# codice restava quindi bloccato a ritentare lo stesso tap alla cieca,
+# fermandosi ogni ciclo successivo con lo stesso identico messaggio, finche'
+# qualcuno non tocca manualmente RICARICA GIOCO - coerente con l'osservazione
+# dell'utente (uno screenshot preso vicino nel tempo puo' mostrare un
+# attacco in corso di UN ALTRO ciclo, mentre QUESTO ciclo resta bloccato dal
+# dialog, dando l'impressione di una contraddizione).
+#
+# Rilevato via OCR (la parola "interrotta" nel corpo del messaggio, testo
+# bianco che supera la soglia di _find_text_center - il testo teal di
+# "RICARICA GIOCO" invece e' troppo scuro per quella soglia).
+#
+# ATTENZIONE - tap automatico su "RICARICA GIOCO" TENTATO e SCARTATO: testato
+# dal vivo lo stesso giorno, ha chiuso l'intero processo HD-Player.exe
+# (non solo il popup) invece di ricaricare la partita - BlueStacks e'
+# rimasto giu' fino a un riavvio manuale completo (task Windows). Un
+# emulatore che si chiude da solo durante una sessione automatica e senza
+# supervisione e' un rischio peggiore del problema che si vuole risolvere
+# (perde anche la calibrazione zoom camera, vedi dezoom_camera.ps1),
+# quindi qui NON si tocca il dialog: si rileva, si manda una foto via
+# Telegram (l'utente lo chiedeva a parte ogni volta, vedi il commento sopra)
+# e si solleva un errore vero, cosi' main() ferma la sessione dopo pochi
+# tentativi (MAX_CONSECUTIVE_ERRORS) invece di restare bloccato a ritentare
+# alla cieca per tutta la sessione come oggi (8+ tentativi falliti di fila).
+RECONNECT_DIALOG_REGION = {"left": 560, "top": 400, "width": 850, "height": 280}
+
+
+def _check_reconnect_dialog():
+    """True se il dialog nativo 'connessione interrotta per inattivita'' e'
+    presente - manda anche una foto via Telegram per farlo vedere subito
+    all'utente (nessun tap sul dialog, vedi commento sopra)."""
+    frame = adb_screenshot()
+    if _find_text_center(frame, RECONNECT_DIALOG_REGION, "interrotta") is None:
+        return False
+    debug_path = "debug_reconnect_dialog.png"
+    cv2.imwrite(debug_path, frame)
+    send_telegram_photo(
+        debug_path,
+        "🛑 Il gioco mostra 'Connessione interrotta per inattività' - non tocco da solo "
+        "RICARICA GIOCO (rischia di chiudere l'emulatore, verificato dal vivo). "
+        "Ricarica il gioco a mano, poi riavvia il bot.",
+    )
+    return True
 
 
 def _find_action_bar_buttons(frame):
@@ -1679,13 +1933,28 @@ def run_attack():
     time.sleep(1.2)
 
     if is_home_screen():
+        # v3.14: prima di ritentare alla cieca, controlla se il vero motivo
+        # e' il dialog nativo "connessione interrotta per inattivita'" (vedi
+        # _check_reconnect_dialog) - se e' quello, ritentare non serve a
+        # nulla (il dialog non si chiude da solo): meglio fermare subito la
+        # sessione con un errore vero (raise, contato da main() nel tetto
+        # MAX_CONSECUTIVE_ERRORS) che ripetere lo stesso tap alla cieca per
+        # il resto della sessione come successo dal vivo oggi (8+ cicli
+        # falliti di fila con lo stesso identico messaggio).
+        if _check_reconnect_dialog():
+            raise RuntimeError("Dialog 'connessione interrotta per inattività' rilevato: serve intervento manuale, non riprovo alla cieca.")
+
         print("[ATTACK] 'Attacco!' non sembra essersi aperto (popup imprevisto?), riprovo...")
         adb_tap(*ATTACK_BUTTON)
         time.sleep(1.5)
 
         if is_home_screen():
+            if _check_reconnect_dialog():
+                raise RuntimeError("Dialog 'connessione interrotta per inattività' rilevato: serve intervento manuale, non riprovo alla cieca.")
             print("[ATTACK] Ancora al villaggio dopo il secondo tentativo, salto questo ciclo.")
-            send_telegram("⚠️ Non riesco ad aprire la schermata di attacco (forse un popup blocca il villaggio). Salto un ciclo, controlla lo schermo se continua a succedere.")
+            debug_path = "debug_attack_stuck.png"
+            cv2.imwrite(debug_path, adb_screenshot())
+            send_telegram_photo(debug_path, "⚠️ Non riesco ad aprire la schermata di attacco (forse un popup blocca il villaggio). Salto un ciclo - ecco cosa vedo io in questo momento.")
             return
 
     adb_tap(*FIND_MATCH_BUTTON)
