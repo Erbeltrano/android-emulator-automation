@@ -151,6 +151,7 @@ ATTENZIONE - parti ancora da consolidare:
 import argparse
 import itertools
 import os
+import platform
 import random
 import re
 import shutil
@@ -167,7 +168,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-VERSION = "0.21"
+VERSION = "0.28"
 
 
 def find_tesseract_cmd():
@@ -335,6 +336,22 @@ STAR_BONUS_OK_BUTTON = (960, 838)   # OK sul popup extra "Bonus stella!" (se com
                                      # edificio vero - vedi commento in run_double_raid()), lasciato solo
                                      # come riferimento storico
 
+# v0.22 (2026-08-11): bug reale segnalato dall'utente - il popup "Bonus
+# stella ottenuto" è ricomparso (già noto da più sessioni di agosto) e da
+# quando il tap cieco su STAR_BONUS_OK_BUTTON è stato rimosso (v0.18) non
+# viene più chiuso da nessuno: _ensure_home_or_recover() tocca solo una
+# zona vuota della mappa, che deseleziona pannelli edificio ma non chiude
+# un vero dialog modale come questo (serve il suo pulsante OK). Il ciclo
+# restava bloccato dietro al popup finché l'utente non è intervenuto a
+# mano. Fix: invece di una coordinata fissa (il problema originale del
+# v0.17/v0.18), si rileva il popup per CONTENUTO reale via OCR (testo
+# "stella" - segnale positivo, non una coordinata alla cieca) e poi si
+# cerca il suo bottone "OK" nella stessa regione, anch'esso via OCR (non
+# un offset fisso: non sappiamo la posizione esatta del popup su ogni
+# stato di zoom/pan). Si tocca SOLO se entrambi vengono trovati - innocuo
+# se il popup non c'è, niente tap alla cieca. Vedi _dismiss_star_bonus_popup().
+POPUP_SCAN_REGION = {"left": 360, "top": 200, "width": 1200, "height": 680}
+
 # Carretto elisir (ricompense dalle difese, cap 1.600.000): flusso
 # documentato in secondo_villaggio/README.md (calibrato e testato con soldi
 # veri il 2026-07-27), ri-verificato dal vivo il 2026-07-31 con le stesse
@@ -395,17 +412,29 @@ WAIT_BEFORE_DEPLOY = 3.0  # dopo "Cerca!": NON aspettare il countdown pieno
                           # (~40s) - il tempo di battaglia rischia di scadere
                           # prima di finire lo schieramento (visto dal vivo)
 ABILITY_RETAP_DELAY = 2.0  # attesa prima di ri-toccare le icone per le abilità
-INTER_TAP_DELAY_RANGE = (0.2, 0.4)
+# v0.25: alzati leggermente (erano 0.2-0.4) - l'utente ha notato dal vivo che
+# a volte una truppa in mezzo alla barra (non sempre la prima) non risulta
+# schierata dopo un doppio raid, anche con la pausa di assestamento
+# RAID2_DEPLOY_SETTLE. Sospetto: il ritmo tap-select→tap-deploy era troppo
+# stretto perché ogni singola coppia di tap venga registrata in modo
+# affidabile dal gioco, non solo un problema di schermata non ancora pronta.
+# Aumento modesto (decine di ms per truppa, ~1s in più su un intero
+# schieramento di 8 unità) per dare più margine ad ogni tap senza reintrodurre
+# attese lunghe tra un raid e l'altro.
+INTER_TAP_DELAY_RANGE = (0.3, 0.5)
+HERO_TO_FIRST_TROOP_EXTRA_DELAY = 0.6  # v0.27: pausa extra solo tra il tap sull'eroe
+                                        # e quello sulla prima truppa - vedi deploy_wave()
 
 # Tetto massimo di sicurezza (il timer di battaglia del Villaggio
 # Costruttori è fisso, 2:30): rete di sicurezza se il rilevamento attivo
 # sotto (BATTLE_BUTTON_CHECK_POINT) smettesse di funzionare per qualche
 # motivo, non più il meccanismo principale (v0.3).
 BATTLE_WAIT_SECONDS = 155.0
-RAID2_PREVIEW_MAX_WAIT = 70.0  # v0.20: tetto massimo per aspettare che l'anteprima del
-                                # secondo raid ("la battaglia inizia tra:") passi alla vera
-                                # battaglia ("termina tra") - osservato dal vivo fino a 55s
-                                # di countdown ancora presenti, margine di sicurezza sopra
+# RAID2_PREVIEW_MAX_WAIT (v0.20, attesa attiva prima di schierare sul secondo
+# raid) rimossa in v0.23 su richiesta esplicita dell'utente - vedi commento
+# in run_double_raid() sopra la seconda chiamata a deploy_wave().
+RAID2_DEPLOY_SETTLE = 1.2  # v0.24: breve pausa di assestamento prima di deploy_wave()
+                           # sul secondo raid - vedi commento in run_double_raid()
 
 # v0.3: rilevamento attivo di fine battaglia invece di un'attesa fissa.
 # Nel primo test autonomo reale (2026-07-30) l'attesa fissa ha fatto
@@ -620,10 +649,18 @@ def _ensure_home_or_recover(max_attempts=3):
     edificio aperti per sbaglio (es. da STAR_BONUS_OK_BUTTON finito su un
     edificio). Se dopo i tentativi non risultiamo ancora su una home
     screen, meglio fermarsi con un errore (il chiamante lo tratta come
-    ciclo fallito, vedi main()) che rischiare altre azioni alla cieca."""
+    ciclo fallito, vedi main()) che rischiare altre azioni alla cieca.
+
+    v0.22: prima del tap "a vuoto" sulla mappa, prova _dismiss_star_bonus_popup()
+    - se il vero popup "Bonus stella ottenuto" è davvero presente (rilevato
+    per contenuto, non per coordinata), lo chiude col suo bottone OK reale
+    invece di sperare che un tap fuori mappa lo deselezioni (i dialog modali
+    non si chiudono toccando fuori, serve il loro bottone)."""
     for _ in range(max_attempts):
         if is_home_screen():
             return True
+        if _dismiss_star_bonus_popup():
+            continue
         print("[RECOVERY] Non risultiamo su una home screen, tocco una zona vuota della mappa...")
         adb_tap(*RECOVERY_EMPTY_MAP_POINT)
         time.sleep(1.2)
@@ -793,6 +830,45 @@ def _find_text_center(frame, region, needle):
             cy = t + data["top"][i] + data["height"][i] // 2
             return (cx, cy)
     return None
+
+
+def _find_word_center(frame, region, exact_word):
+    """Come _find_text_center(), ma richiede una corrispondenza ESATTA
+    (case-insensitive, dopo strip) della singola parola OCR, non una
+    sottostringa. Serve per pulsanti corti come "OK": un match a
+    sottostringa su una regione ampia e affollata darebbe troppi falsi
+    positivi. Usa --psm 11 (testo sparso) invece di --psm 6 (blocco
+    uniforme): qui si scansiona un'area ampia con elementi di UI sparsi,
+    non una singola riga/blocco di testo come negli altri usi di questo
+    OCR nel file."""
+    l, t, w, h = region["left"], region["top"], region["width"], region["height"]
+    crop = frame[t:t + h, l:l + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    data = pytesseract.image_to_data(mask, config="--oem 3 --psm 11", output_type=pytesseract.Output.DICT)
+    for i, word in enumerate(data["text"]):
+        if word.strip().lower() == exact_word.lower():
+            cx = l + data["left"][i] + data["width"][i] // 2
+            cy = t + data["top"][i] + data["height"][i] // 2
+            return (cx, cy)
+    return None
+
+
+def _dismiss_star_bonus_popup():
+    """v0.22: chiude il popup "Bonus stella ottenuto" se davvero presente
+    (rilevamento per contenuto via OCR, non un tap alla cieca - vedi
+    commento su POPUP_SCAN_REGION). Ritorna True se ha trovato e toccato
+    il popup, False se non c'era nulla da chiudere (nessun tap eseguito)."""
+    frame = adb_screenshot()
+    if _find_text_center(frame, POPUP_SCAN_REGION, "stella") is None:
+        return False
+    ok_point = _find_word_center(frame, POPUP_SCAN_REGION, "OK")
+    if ok_point is None:
+        return False
+    print("[POPUP] Popup 'Bonus stella' rilevato (testo 'stella' + bottone 'OK' trovati), tocco OK...")
+    adb_tap(*ok_point)
+    time.sleep(1.0)
+    return True
 
 
 # v0.21 (2026-08-10): stesso fix del bot del villaggio primario (v3.14) -
@@ -1298,6 +1374,39 @@ def collect_elixir_cart():
     time.sleep(1.0)
 
 
+DEZOOM_SCRIPT_PATH = r"C:\Users\simon\dezoom_camera.ps1"
+
+
+def _dezoom_camera():
+    """v0.26: l'utente ha notato dal vivo che la camera perde lo zoom minimo
+    specificamente all'inizio del SECONDO raid (non solo al boot di
+    BlueStacks, dove già viene fatto una volta da windows/dezoom_camera.ps1
+    tramite run_bot_costruttori.bat) - un nuovo avversario/matchmaking
+    sembra resettare lo zoom. Con un zoom diverso da quello calibrato,
+    DEPLOY_POINTS non cade più nella zona giusta e alcune unità (non sempre
+    le stesse) non vengono schierate.
+
+    Richiama lo STESSO script della sessione di avvio, ma a runtime da
+    questo stesso processo Python - funziona perché anche questo processo
+    gira dentro la sessione desktop interattiva vera (stesso Task Scheduler
+    con LogonType=Interactive, vedi commenti in dezoom_camera.ps1: un
+    comando lanciato via SSH non funzionerebbe, ma questo processo non è
+    lanciato via SSH). Il gesto (tasto destro tenuto ~2.5s sulla finestra
+    BlueStacks) è sicuro da ripetere anche se lo zoom è già corretto - porta
+    al minimo, non alterna. No-op su Mac (script PowerShell, solo Windows)."""
+    if platform.system() != "Windows":
+        print("[DEPLOY] Dezoom saltato (non su Windows).")
+        return
+    print("[DEPLOY] Dezoom camera prima del secondo raid...")
+    try:
+        subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-File", DEZOOM_SCRIPT_PATH],
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[DEPLOY] Dezoom fallito (procedo comunque): {e}")
+
+
 def deploy_wave():
     """Un passaggio di schieramento completo (usato identico per raid 1 e
     raid 2): porta la camera in posizione fissa, schiera ogni unità della
@@ -1310,12 +1419,44 @@ def deploy_wave():
 
     print("[DEPLOY] Schiero le unità...")
     deploy_cycle = itertools.cycle(DEPLOY_POINTS)
-    for slot_x in UNIT_SLOTS_X:
+    for idx, slot_x in enumerate(UNIT_SLOTS_X):
         adb_tap(slot_x, UNIT_BAR_Y)
-        time.sleep(random.uniform(0.08, 0.14))
+        time.sleep(random.uniform(0.15, 0.22))  # v0.25: alzato da 0.08-0.14, stesso motivo di INTER_TAP_DELAY_RANGE
         dx, dy = next(deploy_cycle)
         adb_tap(dx, dy)
         time.sleep(random.uniform(*INTER_TAP_DELAY_RANGE))
+        if idx == 0:
+            # v0.27: l'utente ha notato dal vivo, guardando lo schermo, che
+            # sul secondo raid la PRIMA truppa (slot subito dopo l'eroe) a
+            # volte non viene nemmeno selezionata - lo schieramento sembra
+            # partire dalla seconda. UNIT_SLOTS_X[0] è l'eroe, quindi il tap
+            # sulla truppa 1 arriva subito dopo quello sull'eroe: sospetto
+            # che l'animazione di selezione dell'eroe (icona più grande,
+            # probabilmente più lenta a comparire) sia ancora in corso
+            # quando arriva il tap successivo, e lo "mangi". Pausa extra
+            # solo qui, non su tutti gli slot, per non rallentare l'intero
+            # schieramento inutilmente.
+            time.sleep(HERO_TO_FIRST_TROOP_EXTRA_DELAY)
+        if idx == 1:
+            # v0.28: la pausa extra del v0.27 non ha risolto del tutto -
+            # l'utente ha confermato dal vivo che il problema persiste in
+            # modo incostante ("a volte lo fa e a volte no"), quindi non è
+            # un ritardo fisso da allungare ancora ma un tap perso in modo
+            # probabilistico (tipico di un singolo tap ADB che ogni tanto
+            # non viene registrato dal gioco) - l'utente ha detto esplicitamente
+            # che è il tap di SELEZIONE sulla barra a non registrarsi (la
+            # prima truppa non si evidenzia nemmeno). Fix diverso: ripetere
+            # l'intera coppia di tap (selezione + sgancio) una seconda volta
+            # solo per la prima truppa, invece di continuare ad aumentare le
+            # pause. Sicuro da rifare anche se il primo giro è già andato a
+            # segno: la truppa è già sganciata, quindi il tap sulla barra non
+            # selezionerebbe più nulla (slot vuoto = nessun effetto, stesso
+            # comportamento già noto per gli slot vuoti in questo file) e il
+            # tap sulla mappa non farebbe altro che cadere a vuoto.
+            adb_tap(slot_x, UNIT_BAR_Y)
+            time.sleep(random.uniform(0.15, 0.22))
+            adb_tap(dx, dy)
+            time.sleep(random.uniform(*INTER_TAP_DELAY_RANGE))
 
     time.sleep(ABILITY_RETAP_DELAY)
 
@@ -1438,31 +1579,53 @@ def run_double_raid():
         # dal vivo poche battaglie dopo: un intero raid ha schierato quasi
         # zero truppe, non solo la prima.
         #
-        # v0.20, causa vera trovata dal vivo (confronto screenshot): "la
-        # battaglia INIZIA tra: Ns" (rilevato da wait_for_next_screen come
-        # segnale "prossimo raid pronto") è ancora una schermata di ANTEPRIMA
-        # dell'avversario - bottone "Termina battaglia", camera larga in
-        # stile scouting, NESSUNA truppa/pannello "Danno complessivo" - non
-        # la vera schermata di battaglia (quella ha "Resa" in basso a
-        # sinistra, la camera vicina al bordo villaggio dopo il pan di
-        # deploy_wave(), e mostra "la battaglia TERMINA tra"). Il countdown
-        # "inizia" osservato dal vivo è arrivato fino a 55s ancora da
-        # scadere, molto più lungo del margine che qualunque attesa fissa
-        # breve potrebbe coprire - il vecchio commento su questa funzione
-        # ("si può schierare subito, anche durante quel countdown") era
-        # semplicemente sbagliato per questa fase. Fix: aspettare
-        # attivamente (stesso meccanismo OCR di wait_for_next_screen, non
-        # un'attesa a tempo fisso) che il banner passi a "termina" - cioè
-        # che la battaglia vera sia davvero iniziata - prima di schierare.
-        print("[RAID 2/2] Secondo raid pronto, aspetto che la battaglia vera cominci...")
-        started = time.monotonic()
-        while time.monotonic() - started < RAID2_PREVIEW_MAX_WAIT:
-            if _read_top_banner_state() == "termina":
-                break
-            time.sleep(BATTLE_POLL_INTERVAL)
-        else:
-            print(f"[RAID 2/2] Tetto massimo di {RAID2_PREVIEW_MAX_WAIT:.0f}s raggiunto, schiero comunque.")
-        print("[RAID 2/2] Schiero...")
+        # v0.20 (2026-08-09), causa apparente trovata dal vivo (confronto
+        # screenshot): "la battaglia INIZIA tra: Ns" sembrava ancora una
+        # schermata di ANTEPRIMA (bottone "Termina battaglia", camera larga,
+        # nessuna truppa) - fix: aspettare attivamente che il banner passasse
+        # a "termina" prima di schierare (fino a RAID2_PREVIEW_MAX_WAIT=70s).
+        #
+        # v0.23 (2026-08-11): l'utente, guardando il bot dal vivo oggi, ha
+        # detto esplicitamente che l'attesa introdotta in v0.20 fa perdere
+        # troppo tempo ad ogni ciclo e che il comportamento precedente
+        # (schierare SUBITO appena letto "la battaglia inizia tra", senza
+        # aspettare "termina") funzionava bene. Attesa rimossa: si schiera
+        # non appena wait_for_next_screen() sopra segnala "next_raid", stesso
+        # istante in cui viene letto "inizia" per la prima volta - nessuna
+        # ulteriore lettura OCR o attesa in questo punto.
+        # NOTA per il futuro: se ricompare il bug del v0.19 (prima unità o
+        # intero raid sprecato sul secondo attacco), questo è il primo posto
+        # da ricontrollare - la diagnosi del v0.20 (screenshot con "Termina
+        # battaglia"/camera larga durante "inizia") resta agli atti più sotto
+        # e potrebbe tornare rilevante se il sintomo si ripresenta.
+        #
+        # v0.24 (2026-08-11, subito dopo): l'utente ha notato dal vivo che
+        # con lo schieramento istantaneo (v0.23) la PRIMA unità della barra
+        # a volte non viene schierata e resta lì - lo stesso identico
+        # sintomo del v0.19, ricomparso ora che l'attesa del v0.20 è stata
+        # rimossa. A differenza del v0.19 (dove un'attesa fissa breve non
+        # bastava perché la schermata era ancora un'anteprima intera),
+        # ORA sappiamo dallo screenshot di verifica del v0.23 che il primo
+        # tap arriva già sulla vera schermata di battaglia - il problema
+        # sembra quindi un margine troppo stretto tra la fine dello swipe
+        # camera e il primo tap di selezione unità, non più la schermata
+        # sbagliata. Fix: piccola pausa fissa (RAID2_DEPLOY_SETTLE, non i
+        # 70s del v0.20) subito dopo il rilevamento di "inizia", prima di
+        # chiamare deploy_wave() - lascia il tempo alla UI di diventare
+        # cliccabile senza reintrodurre l'attesa lunga che l'utente ha
+        # chiesto di togliere.
+        #
+        # v0.26 (2026-08-11, subito dopo ancora): l'utente ha guardato lo
+        # schermo mentre succedeva e ha identificato la causa vera - la
+        # camera perde lo zoom minimo specificamente all'inizio del secondo
+        # raid (non solo al boot di BlueStacks), quindi DEPLOY_POINTS non
+        # cade più nella zona giusta per alcune unità. Non era (solo) un
+        # problema di margine/tempo tra i tap. Fix: richiamare lo stesso
+        # dezoom dell'avvio sessione (_dezoom_camera()) anche qui, prima di
+        # schierare.
+        print("[RAID 2/2] Secondo raid pronto, ri-dezoommo la camera e schiero...")
+        time.sleep(RAID2_DEPLOY_SETTLE)
+        _dezoom_camera()
         deploy_wave()
         print("[RAID 2/2] Aspetto la fine della battaglia (controllo attivo)...")
         wait_for_next_screen()

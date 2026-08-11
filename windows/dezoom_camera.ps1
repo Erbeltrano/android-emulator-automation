@@ -67,7 +67,7 @@ $cx = [int](($rect.Left + $rect.Right) / 2)
 $cy = [int](($rect.Top + $rect.Bottom) / 2)
 "Click destro tenuto al centro finestra: $cx,$cy (rect $($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom))" | Out-File -FilePath $logFile -Append
 
-[Win32Dezoom]::SetCursorPos($cx, $cy)
+[Win32Dezoom]::SetCursorPos($cx, $cy) | Out-Null
 Start-Sleep -Milliseconds 200
 [Win32Dezoom]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)   # MOUSEEVENTF_RIGHTDOWN
 Start-Sleep -Milliseconds 2500
