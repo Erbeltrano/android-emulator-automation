@@ -22,8 +22,21 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+# bot_log.txt non aveva alcun orario, solo l'ordine delle righe: per
+# diagnosticare un incidente da remoto (es. via SSH mentre l'utente è
+# fuori) bisognava dedurre i tempi a occhio o riprodurre dal vivo. Ogni
+# print del bot passa comunque da qui, quindi basta un solo punto per
+# aggiungere l'orario a tutte le righe senza toccare le centinaia di
+# chiamate a print() sparse nel file (v3.15).
+_builtin_print = print
+
+
+def print(*args, **kwargs):
+    _builtin_print(f"[{time.strftime('%H:%M:%S')}]", *args, **kwargs)
+
+
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.15"
+VERSION = "3.16"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -190,20 +203,34 @@ def adb_screenshot(retries=3, retry_delay=1.0):
     dello stesso hiccup post-risveglio, visto dal vivo il 27/07) fa fallire
     cv2.imdecode con un'assertion invece di ritornare un frame None -
     prima bypassava questo stesso retry pensato apposta per quel caso.
+
+    Se anche questi retry ravvicinati falliscono tutti, prova _adb_recover()
+    (v3.15) prima di arrendersi - stesso bridge ADB di adb_tap/adb_swipe,
+    stesso rischio di blocco piu' lungo di un semplice hiccup.
     """
+    def _capture_once():
+        result = adb("exec-out", "screencap", "-p", device=DEVICE)
+        img_array = np.frombuffer(result.stdout, dtype=np.uint8)
+        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise RuntimeError("Screenshot ADB non decodificabile (screencap fallito?).")
+        return frame
+
     last_error = None
     for attempt in range(retries):
         try:
-            result = adb("exec-out", "screencap", "-p", device=DEVICE)
-            img_array = np.frombuffer(result.stdout, dtype=np.uint8)
-            frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-            if frame is None:
-                raise RuntimeError("Screenshot ADB non decodificabile (screencap fallito?).")
-            return frame
+            return _capture_once()
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError, cv2.error) as e:
             last_error = e
             if attempt < retries - 1:
                 time.sleep(retry_delay)
+
+    if _adb_recover():
+        try:
+            return _capture_once()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError, cv2.error) as e:
+            last_error = e
+
     raise last_error
 
 

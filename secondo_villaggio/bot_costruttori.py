@@ -168,7 +168,17 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-VERSION = "0.28"
+# Stesso trucco del bot principale (v3.15): bot_costruttori_log.txt non
+# aveva alcun orario. Un solo punto qui aggiunge il timestamp a tutte le
+# print() del file senza doverle toccare una per una.
+_builtin_print = print
+
+
+def print(*args, **kwargs):
+    _builtin_print(f"[{time.strftime('%H:%M:%S')}]", *args, **kwargs)
+
+
+VERSION = "0.29"
 
 
 def find_tesseract_cmd():
@@ -277,10 +287,39 @@ DEVICE = find_device()
 print(f"[ADB] Device connesso: {DEVICE}")
 
 
+def _adb_recover(max_wait=20.0, poll_interval=1.5):
+    """Stessa `_adb_recover()` del bot principale (v3.15): fa ripartire il
+    server adb e ripesca il device se il bridge di BlueStacks resta
+    bloccato piu' a lungo dei retry ravvicinati di _adb_retry - trovato dal
+    vivo sul villaggio primario, mai osservato qui, ma stesso identico
+    bridge ADB e stesso rischio ("capita anche altrove nel progetto", gia'
+    annotato per i tap persi del secondo raid)."""
+    global DEVICE
+    try:
+        subprocess.run([ADB_CMD, "kill-server"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    waited = 0.0
+    while waited < max_wait:
+        try:
+            result = adb("devices")
+            lines = result.stdout.decode(errors="ignore").strip().splitlines()[1:]
+            for line in lines:
+                if line.strip().endswith("device"):
+                    DEVICE = line.split()[0]
+                    return True
+        except Exception:
+            pass
+        time.sleep(poll_interval)
+        waited += poll_interval
+    return False
+
+
 def _adb_retry(func, retries=3, retry_delay=1.0):
     """Stesso pattern di `_adb_retry()` nel bot principale: un singolo
     intoppo ADB transitorio (tipico post-risveglio a freddo) non deve far
-    fallire subito l'intero ciclo."""
+    fallire subito l'intero ciclo. Se anche questo non basta, un tentativo
+    di _adb_recover() prima di arrendersi (v3.15/v0.29)."""
     last_error = None
     for attempt in range(retries):
         try:
@@ -289,6 +328,16 @@ def _adb_retry(func, retries=3, retry_delay=1.0):
             last_error = e
             if attempt < retries - 1:
                 time.sleep(retry_delay)
+
+    if _adb_recover():
+        for attempt in range(retries):
+            try:
+                return func()
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(retry_delay)
+
     raise last_error
 
 
@@ -308,20 +357,31 @@ def adb_swipe(x1, y1, x2, y2, duration_ms=600):
 
 def adb_screenshot(retries=3, retry_delay=1.0):
     """Stesso pattern di `adb_screenshot()` nel bot principale: ritenta in
-    caso di intoppo ADB transitorio (tipico post-risveglio a freddo)."""
+    caso di intoppo ADB transitorio (tipico post-risveglio a freddo), poi
+    _adb_recover() se anche questo non basta (v0.29)."""
+    def _capture_once():
+        result = adb("exec-out", "screencap", "-p", device=DEVICE)
+        img_array = np.frombuffer(result.stdout, dtype=np.uint8)
+        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise RuntimeError("Screenshot ADB non decodificabile (screencap fallito?).")
+        return frame
+
     last_error = None
     for attempt in range(retries):
         try:
-            result = adb("exec-out", "screencap", "-p", device=DEVICE)
-            img_array = np.frombuffer(result.stdout, dtype=np.uint8)
-            frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-            if frame is None:
-                raise RuntimeError("Screenshot ADB non decodificabile (screencap fallito?).")
-            return frame
+            return _capture_once()
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError, cv2.error) as e:
             last_error = e
             if attempt < retries - 1:
                 time.sleep(retry_delay)
+
+    if _adb_recover():
+        try:
+            return _capture_once()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError, cv2.error) as e:
+            last_error = e
+
     raise last_error
 
 
@@ -1674,8 +1734,19 @@ def run_double_raid():
         )
 
 
-COLLECT_ELIXIR_EVERY = 10  # ogni quanti cicli svuotare il carretto elisir
-WALL_UPGRADE_EVERY = 20    # ogni quanti cicli tentare un upgrade mura
+COLLECT_ELIXIR_EVERY = 5   # ogni quanti cicli svuotare il carretto elisir (dimezzato da 10, richiesta utente 2026-08-12)
+WALL_UPGRADE_EVERY = 14    # ogni quanti cicli tentare un upgrade mura (da 20, richiesta utente 2026-08-12)
+
+
+def _format_error(e):
+    """str(e) su un CalledProcessError non include lo stderr del comando -
+    stesso fix del bot principale (v3.15/v0.29), per non dover riprodurre
+    dal vivo un errore solo per scoprire cosa diceva davvero."""
+    detail = getattr(e, "stderr", None)
+    if detail:
+        detail = detail.decode(errors="ignore").strip()
+        return f"{e} | stderr: {detail}"
+    return str(e)
 
 
 def main():
@@ -1720,7 +1791,7 @@ def main():
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
-                print(f"[ERRORE] Ciclo {cycle} fallito: {e}")
+                print(f"[ERRORE] Ciclo {cycle} fallito: {_format_error(e)}")
                 send_telegram(f"⚠️ Villaggio Costruttori: errore nel ciclo {cycle}: {e}")
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                     send_telegram(f"⛔ Villaggio Costruttori: {MAX_CONSECUTIVE_ERRORS} errori di fila, mi fermo.")
@@ -1737,14 +1808,14 @@ def main():
                 try:
                     collect_elixir_cart()
                 except Exception as e:
-                    print(f"[ERRORE] Raccolta elisir fallita al ciclo {cycle}: {e}")
+                    print(f"[ERRORE] Raccolta elisir fallita al ciclo {cycle}: {_format_error(e)}")
                     send_telegram(f"⚠️ Villaggio Costruttori: raccolta elisir fallita al ciclo {cycle}: {e}")
 
             if cycle % WALL_UPGRADE_EVERY == 0:
                 try:
                     try_wall_upgrade()
                 except Exception as e:
-                    print(f"[ERRORE] Upgrade mura fallito al ciclo {cycle}: {e}")
+                    print(f"[ERRORE] Upgrade mura fallito al ciclo {cycle}: {_format_error(e)}")
                     send_telegram(f"⚠️ Villaggio Costruttori: upgrade mura fallito al ciclo {cycle}: {e}")
     except KeyboardInterrupt:
         print("\n[STOP] Interrotto manualmente.")
