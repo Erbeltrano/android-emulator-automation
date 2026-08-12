@@ -20,7 +20,13 @@ goto waitadb
 echo Avvio Clash of Clans...
 %ADB% shell monkey -p com.supercell.clashofclans -c android.intent.category.LAUNCHER 1
 echo Aspetto che il gioco carichi...
-timeout /t 35 /nobreak >nul
+rem Ridotto da 35 a 25s il 2026-08-12 (richiesta utente: velocizzare l'avvio):
+rem il bot stesso, subito dopo, aspetta fino a 15s in piu' che il villaggio
+rem sia pronto prima di scoutare/attaccare (rete di sicurezza gia' esistente).
+rem NON ridurre oltre senza verificarlo dal vivo: il dezoom subito dopo tocca
+rem davvero la camera del gioco, e uno zoom sbagliato per un caricamento
+rem ancora in corso e' stato causa di piu' bug seri in passato (vedi recap.md).
+timeout /t 25 /nobreak >nul
 
 echo Dezoom automatico della camera...
 powershell -ExecutionPolicy Bypass -File "C:\Users\simon\dezoom_camera.ps1"

@@ -60,8 +60,8 @@ DEFAULT_SETTINGS = {
     "auto_wall_upgrade": False,
 }
 
-WAKE_WAIT_SECONDS = 35   # attesa dopo il magic packet prima di provare SSH
-WAKE_SSH_RETRIES = 10
+WAKE_INITIAL_WAIT = 12   # cuscinetto minimo dopo il magic packet prima del primo controllo SSH
+WAKE_SSH_RETRIES = 14
 WAKE_SSH_RETRY_DELAY = 5
 
 
@@ -177,6 +177,33 @@ def get_log_tail(lines=30):
     return clean[-lines:]
 
 
+def _wake_and_wait_reachable(progress):
+    """Manda il magic packet e aspetta che il PC risponda via SSH.
+
+    Prima faceva un'attesa cieca fissa (`WAKE_WAIT_SECONDS`, 35s) prima del
+    primissimo controllo, indipendentemente da quanto il PC fosse in realta'
+    gia' raggiungibile - osservato dal vivo il 2026-08-12 (più wake-up
+    consecutivi nella stessa sessione): il primo controllo *dopo* l'attesa
+    riusciva sempre al primo colpo, segno che il PC era pronto ben prima dei
+    35s pieni. Ora si aspetta solo un breve cuscinetto (`WAKE_INITIAL_WAIT`,
+    12s - un boot Windows/POST non puo' comunque essere piu' rapido di
+    cosi') poi si passa a interrogare, cogliendo il PC pronto appena lo e'
+    invece di aspettare sempre il massimo. Il margine totale di pazienza
+    (`WAKE_SSH_RETRIES` alzato da 10 a 14 per compensare) resta uguale o
+    superiore a prima: un boot lento non viene abbandonato prima.
+    """
+    send_magic_packet()
+    time.sleep(WAKE_INITIAL_WAIT)
+
+    for _ in range(WAKE_SSH_RETRIES):
+        if windows_reachable():
+            return True
+        time.sleep(WAKE_SSH_RETRY_DELAY)
+
+    progress("❌ Il PC Windows non risponde via SSH dopo il Wake-on-LAN. Controlla che sia acceso.")
+    return False
+
+
 def start_bot(progress=lambda msg: None):
     """Sveglia il PC Windows e avvia il bot.
 
@@ -185,15 +212,7 @@ def start_bot(progress=lambda msg: None):
     dashboard, ecc). Ritorna True se il bot risulta avviato.
     """
     progress("📡 Sveglio il PC Windows (Wake-on-LAN)...")
-    send_magic_packet()
-    time.sleep(WAKE_WAIT_SECONDS)
-
-    for _ in range(WAKE_SSH_RETRIES):
-        if windows_reachable():
-            break
-        time.sleep(WAKE_SSH_RETRY_DELAY)
-    else:
-        progress("❌ Il PC Windows non risponde via SSH dopo il Wake-on-LAN. Controlla che sia acceso.")
+    if not _wake_and_wait_reachable(progress):
         return False
 
     if python_running():
@@ -226,15 +245,7 @@ def start_bot_costruttori(progress=lambda msg: None):
     `switch_to_village()` in `bot_costruttori.py`.
     """
     progress("📡 Sveglio il PC Windows (Wake-on-LAN)...")
-    send_magic_packet()
-    time.sleep(WAKE_WAIT_SECONDS)
-
-    for _ in range(WAKE_SSH_RETRIES):
-        if windows_reachable():
-            break
-        time.sleep(WAKE_SSH_RETRY_DELAY)
-    else:
-        progress("❌ Il PC Windows non risponde via SSH dopo il Wake-on-LAN. Controlla che sia acceso.")
+    if not _wake_and_wait_reachable(progress):
         return False
 
     if python_running():
@@ -315,6 +326,45 @@ def stop_bot(progress=lambda msg: None):
     ssh_run('powershell -Command "Get-Process -Name HD-Player -ErrorAction SilentlyContinue | Stop-Process -Force"')
     ssh_run("shutdown /s /t 5 /f")
     progress("✅ Fatto: bot fermato, BlueStacks chiuso, PC in spegnimento.")
+    return True
+
+
+def pause_for_exam(progress=lambda msg: None):
+    """Ferma bot/BlueStacks e disabilita i task pianificati di avvio
+    automatico, SENZA spegnere il PC (a differenza di stop_bot()) - per
+    quando lo stesso PC Windows serve anche per altro (es. esami
+    universitari con software di proctoring, richiesta esplicita
+    dell'utente 2026-08-12) e deve restare acceso e usabile, ma senza
+    nulla di questo progetto in esecuzione o riattivabile per sbaglio
+    (un comando Telegram/dashboard arrivato per errore non deve poter far
+    ripartire nulla finche' non si chiama resume_after_exam()).
+
+    Disabilitare i task (`schtasks /change ... /disable`) invece di
+    cancellarli: reversibile con un solo comando, non serve ricrearli.
+    """
+    if not windows_reachable():
+        progress("💤 PC Windows già spento, niente da mettere in pausa.")
+        return False
+
+    progress("⏸️ Fermo bot/BlueStacks e disabilito l'avvio automatico...")
+    ssh_run('powershell -Command "Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force"')
+    ssh_run('powershell -Command "Get-Process -Name HD-Player -ErrorAction SilentlyContinue | Stop-Process -Force"')
+    ssh_run('schtasks /change /tn "CoCBot" /disable')
+    ssh_run('schtasks /change /tn "CoCBotCostruttori" /disable')
+    progress(
+        "✅ Bot e BlueStacks fermi, avvio automatico disabilitato. "
+        "Il PC resta acceso e usabile normalmente. Per riprendere: resume_after_exam()."
+    )
+    return True
+
+
+def resume_after_exam(progress=lambda msg: None):
+    """Riabilita i task pianificati disattivati da pause_for_exam()."""
+    if not windows_reachable():
+        progress("💤 PC Windows spento: riabilito comunque i task, si attiveranno al prossimo avvio raggiungibile.")
+    ssh_run('schtasks /change /tn "CoCBot" /enable')
+    ssh_run('schtasks /change /tn "CoCBotCostruttori" /enable')
+    progress("✅ Avvio automatico riabilitato. Il bot può ripartire normalmente da dashboard/Telegram.")
     return True
 
 
