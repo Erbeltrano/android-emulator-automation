@@ -23,7 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.14"
+VERSION = "3.15"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -207,6 +207,41 @@ def adb_screenshot(retries=3, retry_delay=1.0):
     raise last_error
 
 
+def _adb_recover(max_wait=20.0, poll_interval=1.5):
+    """Prova a far ripartire l'adb server e ritrova il device, riassegnando
+    DEVICE se il serial e' cambiato.
+
+    Trovato dal vivo il 2026-08-12: il bridge adb di BlueStacks puo'
+    bloccarsi per diversi secondi (osservato esattamente al primo swipe
+    dopo l'inizio della battaglia, cioe' durante il caricamento pesante
+    della base avversaria) e restare rotto per piu' a lungo di quanto i
+    pochi retry ravvicinati di _adb_retry riescano a coprire (visti falliti
+    3 attacchi di fila, quindi ben oltre qualche secondo). Un "adb devices"
+    innocuo (fa ripartire da solo il server se e' morto, come osservato
+    manualmente) e' spesso sufficiente; kill-server e' li' solo come rete
+    di sicurezza se il client non lo rileva da solo.
+    """
+    global DEVICE
+    try:
+        subprocess.run([ADB_CMD, "kill-server"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    waited = 0.0
+    while waited < max_wait:
+        try:
+            result = adb("devices")
+            lines = result.stdout.decode(errors="ignore").strip().splitlines()[1:]
+            for line in lines:
+                if line.strip().endswith("device"):
+                    DEVICE = line.split()[0]
+                    return True
+        except Exception:
+            pass
+        time.sleep(poll_interval)
+        waited += poll_interval
+    return False
+
+
 def _adb_retry(func, retries=3, retry_delay=1.0):
     """Ritenta una chiamata adb (tap/swipe) in caso di intoppo transitorio -
     stesso tipo di hiccup post-risveglio gia' visto e gestito per lo
@@ -215,6 +250,11 @@ def _adb_retry(func, retries=3, retry_delay=1.0):
     limite di errori consecutivi della sessione (osservato dal vivo il
     27/07: 4 sessioni di fila interrotte da singoli intoppi ADB transitori
     sul tap di "Attacco!", subito dopo un risveglio via Wake-on-LAN).
+
+    Se anche questi retry ravvicinati falliscono tutti, prova UNA volta
+    _adb_recover() (vedi sopra) prima di arrendersi definitivamente: copre
+    il caso di un blocco piu' lungo del bridge adb invece del semplice
+    hiccup di un istante.
     """
     last_error = None
     for attempt in range(retries):
@@ -224,6 +264,16 @@ def _adb_retry(func, retries=3, retry_delay=1.0):
             last_error = e
             if attempt < retries - 1:
                 time.sleep(retry_delay)
+
+    if _adb_recover():
+        for attempt in range(retries):
+            try:
+                return func()
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(retry_delay)
+
     raise last_error
 
 
@@ -2133,7 +2183,15 @@ def main():
             run_attack()
         except Exception as e:
             consecutive_errors += 1
-            print(f"[ERRORE] {e}")
+            # str(e) su un CalledProcessError non include lo stderr del
+            # comando (solo "returned non-zero exit status N") - senza
+            # questo il log non dice MAI perche' un comando adb sia
+            # fallito, solo che e' fallito (scoperto dal vivo il
+            # 2026-08-12 mentre si diagnosticava un blocco del bridge adb).
+            stderr_detail = getattr(e, "stderr", None)
+            if stderr_detail:
+                stderr_detail = stderr_detail.decode(errors="ignore").strip()
+            print(f"[ERRORE] {e}" + (f" | stderr: {stderr_detail}" if stderr_detail else ""))
             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                 msg = f"Troppi errori di fila ({consecutive_errors}), mi fermo invece di continuare a riprovare alla cieca."
                 print(f"[STOP] {msg}")
