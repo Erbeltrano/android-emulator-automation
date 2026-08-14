@@ -200,16 +200,6 @@ def find_tesseract_cmd():
 
 pytesseract.pytesseract.tesseract_cmd = find_tesseract_cmd()
 
-# Ogni riga di log ha l'ora esatta: senza, capire DOVE va perso tempo in un
-# ciclo (es. segnalato dal vivo: sembra restare fermo per oltre un minuto
-# prima del secondo raid) richiederebbe di rileggere lo screen a occhio
-# invece di guardare i minuti/secondi reali tra una riga e l'altra del log.
-_builtin_print = print
-
-
-def print(*args, **kwargs):
-    _builtin_print(f"[{time.strftime('%H:%M:%S')}]", *args, **kwargs)
-
 # ==========================
 # TELEGRAM (stesse credenziali del bot principale, vedi README/cred)
 # ==========================
