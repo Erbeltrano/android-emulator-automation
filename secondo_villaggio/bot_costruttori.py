@@ -137,6 +137,18 @@ inizio E a fine ciclo) ora scattano solo se `is_home_screen()` dice che
 c'è davvero qualcosa da chiudere, invece di sempre "a vuoto" - se non serve
 non si tocca affatto quel punto.
 
+v0.30: bug vero trovato dal vivo il 2026-08-14 - l'utente ha avviato il
+bot da Telegram e l'ha visto chiudersi pochi secondi dopo l'avvio. Il
+blocco che aggiunge il timestamp a tutte le `print()` (introdotto in
+v0.29) era presente due volte nel file per errore. Alla seconda
+esecuzione, `_builtin_print = print` catturava già il wrapper della
+prima (non il `print` originale di Python), quindi la nuova `print()`
+richiamava se stessa all'infinito - `RecursionError: maximum recursion
+depth exceeded` alla primissima riga di log (`[ADB] Device connesso`),
+crash immediato. Fix: rimosso il blocco duplicato. Confermato dal vivo
+(riavvio via task Windows `CoCBotCostruttori`): il bot resta in
+esecuzione ed esegue normalmente un ciclo di attacco.
+
 ATTENZIONE - parti ancora da consolidare:
 - Il rilevamento raid1→raid2/risultati combina OCR (`TOP_BANNER_REGION`)
   e un pixel singolo (`RESULTS_SCREEN_CHECK_POINT`), verificati sugli
@@ -178,7 +190,7 @@ def print(*args, **kwargs):
     _builtin_print(f"[{time.strftime('%H:%M:%S')}]", *args, **kwargs)
 
 
-VERSION = "0.29"
+VERSION = "0.30"
 
 
 def find_tesseract_cmd():
