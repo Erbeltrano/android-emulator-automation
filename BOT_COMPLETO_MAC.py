@@ -36,7 +36,7 @@ def print(*args, **kwargs):
 
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.16"
+VERSION = "3.18"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -341,6 +341,19 @@ FIND_MATCH_BUTTON = (335, 800)       # "Trova una partita" (tab Multigiocatore)
 CONFIRM_ATTACK_BUTTON = (1697, 960)  # "Attacco!" nella schermata riepilogo esercito
 SKIP_BUTTON = (1745, 780)            # "Avanti" - scarta l'avversario e ricerca
 RETURN_HOME_BUTTON = (955, 985)      # "Torna al villaggio" a fine battaglia
+
+# Controllo esercito a inizio sessione (v3.18, richiesta esplicita
+# dell'utente): la stessa schermata "Il mio esercito" aperta da
+# FIND_MATCH_BUTTON ha in alto tre tab - "Il mio esercito" (composizione
+# attuale) / "Formazioni salvate" / "Formazioni suggerite". Su "Formazioni
+# salvate" ogni formazione ha un tasto "Usa" che la applica ISTANTANEAMENTE
+# (nessuna attesa di addestramento, confermato dal vivo). "Esercito 1", la
+# prima della lista, contiene i draghi elettrici (la formazione voluta
+# dall'utente per il farming) - selezionarla e' quindi un tap posizionale
+# fisso sulla prima riga, senza bisogno di OCR/riconoscimento truppe.
+SAVED_FORMATIONS_TAB = (960, 108)    # tab "Formazioni salvate"
+USE_FIRST_ARMY_BUTTON = (1765, 277)  # "Usa" sulla prima formazione salvata (Esercito 1)
+CLOSE_ARMY_PANEL_BUTTON = (1855, 98) # "X" per chiudere il pannello e tornare al villaggio
 
 # Regioni "Bottino disponibile" nella schermata di scouting, prima che la
 # battaglia inizi. Formato (left, top, width, height). Calibrate dal vivo
@@ -1315,6 +1328,60 @@ def _find_text_center(frame, region, needle):
 # alla cieca per tutta la sessione come oggi (8+ tentativi falliti di fila).
 RECONNECT_DIALOG_REGION = {"left": 560, "top": 400, "width": 850, "height": 280}
 
+# v3.17 (2026-08-14): quando Clash of Clans richiede un aggiornamento
+# obbligatorio, al posto del gioco compare la schermata del Play Store
+# "Aggiornamento disponibile" (sfondo bianco, font di sistema normale - a
+# differenza del font stilizzato del gioco, qui l'OCR e' affidabile). Vista
+# dal vivo il 2026-08-14: l'utente ha avviato il bot via Telegram, il gioco
+# non si e' aperto, uno screenshot manuale ha mostrato questa schermata
+# invece del villaggio (recuperato lo screenshot originale dal file che
+# /schermo lascia sul PC Windows, MAI sovrascritto da allora). A differenza
+# del dialog "connessione interrotta" sopra, qui il tap automatico e' meno
+# rischioso: "Aggiorna" e' un pulsante standard del Play Store, la stessa
+# identica azione che l'utente farebbe a mano - non un elemento fragile del
+# rendering del gioco. Coordinate del pulsante trovate via color-matching
+# sullo screenshot reale (blu Google pieno, bbox 972,512,357,60).
+PLAY_STORE_UPDATE_REGION = {"left": 560, "top": 140, "width": 450, "height": 60}
+PLAY_STORE_UPDATE_BUTTON_POINT = (1150, 541)
+
+
+def _check_and_handle_app_update(max_wait_seconds=120):
+    """Se compare la schermata Play Store "Aggiornamento disponibile" al
+    posto del gioco, tocca "Aggiorna", aspetta che l'installazione finisca
+    e rilancia Clash of Clans. Ritorna True se ha dovuto intervenire (chi
+    chiama sa cosi' che il gioco sta ripartendo da zero e serve ridargli
+    tempo prima di considerarlo pronto).
+    """
+    frame = adb_screenshot()
+    if _find_text_center(frame, PLAY_STORE_UPDATE_REGION, "Aggiornamento") is None:
+        return False
+
+    print("[UPDATE] Rilevata schermata Play Store 'Aggiornamento disponibile', tocco 'Aggiorna'...")
+    send_telegram("⬆️ Clash of Clans richiede un aggiornamento: lo installo da solo e riprovo ad avviare il gioco.")
+    adb_tap(*PLAY_STORE_UPDATE_BUTTON_POINT)
+
+    waited = 0
+    still_stuck = True
+    while waited < max_wait_seconds:
+        time.sleep(5)
+        waited += 5
+        frame = adb_screenshot()
+        if _find_text_center(frame, PLAY_STORE_UPDATE_REGION, "Aggiornamento") is None:
+            still_stuck = False
+            break
+
+    if still_stuck:
+        send_telegram(
+            "❌ L'aggiornamento di Clash of Clans non risulta completato dopo "
+            f"{max_wait_seconds}s. Controlla a mano (/schermo) e riavvia il bot."
+        )
+        raise RuntimeError("Aggiornamento Play Store non completato in tempo.")
+
+    print("[UPDATE] Aggiornamento completato, rilancio Clash of Clans.")
+    adb("shell", "monkey", "-p", "com.supercell.clashofclans", "-c", "android.intent.category.LAUNCHER", "1", device=DEVICE, timeout=20)
+    time.sleep(5)
+    return True
+
 
 def _check_reconnect_dialog():
     """True se il dialog nativo 'connessione interrotta per inattivita'' e'
@@ -1990,6 +2057,66 @@ def wait_for_battle_end():
     print(f"[WAIT] Tetto massimo di {max_wait:.0f}s raggiunto, termino comunque.")
 
 
+def ensure_correct_army():
+    """Controlla/seleziona l'esercito giusto (v3.18) prima di iniziare a
+    attaccare - l'utente ha notato dal vivo che a volte l'account resta con
+    un'altra formazione impostata (es. lasciata a mano in una sessione di
+    gioco manuale) invece di quella coi draghi elettrici usata per il
+    farming. Va chiamata una sola volta a inizio sessione, con
+    is_home_screen() gia' vero (stesso presupposto di switch_to_village()).
+
+    Non serve controllare PRIMA quale formazione sia gia' attiva: il tasto
+    "Usa" su una formazione gia' attiva non fa nulla di dannoso (nessuna
+    conferma di spesa, e' solo una selezione), quindi si seleziona sempre
+    "Esercito 1" alla cieca invece di dover riconoscere via OCR/immagine
+    quali truppe sono gia' in barra - molto piu' robusto.
+
+    Passa dalla stessa schermata "Il mio esercito" aperta da
+    FIND_MATCH_BUTTON (la stessa usata da run_attack() per attaccare
+    davvero), ma si esce col tasto "X" invece di confermare "Attacco!": non
+    viene quindi consumata nessuna ricerca avversario. Se qualcosa va storto
+    a meta' (popup imprevisto, layout diverso) la funzione ritorna False
+    senza sollevare eccezioni - il chiamante logga un avviso e la sessione
+    prosegue comunque con l'esercito che risulta gia' impostato, invece di
+    bloccare l'intera sessione per una comodita' non essenziale.
+    """
+    print("[ESERCITO] Controllo/seleziono la formazione 'Esercito 1' (draghi elettrici)...")
+    adb_tap(*ATTACK_BUTTON)
+    time.sleep(1.5)
+
+    if is_home_screen():
+        print("[ESERCITO] 'Attacco!' non sembra essersi aperto (popup imprevisto?), riprovo...")
+        adb_tap(*ATTACK_BUTTON)
+        time.sleep(1.5)
+        if is_home_screen():
+            print("[ESERCITO] Ancora al villaggio, salto il controllo esercito per questa sessione.")
+            return False
+
+    adb_tap(*FIND_MATCH_BUTTON)
+    time.sleep(1.6)
+    adb_tap(*SAVED_FORMATIONS_TAB)
+    time.sleep(1.2)
+    adb_tap(*USE_FIRST_ARMY_BUTTON)
+    time.sleep(1.2)
+    adb_tap(*CLOSE_ARMY_PANEL_BUTTON)
+    time.sleep(1.6)
+
+    if not is_home_screen():
+        # Non siamo tornati al villaggio come atteso (es. tap caduto fuori
+        # bersaglio a causa di un popup, o layout diverso da quello
+        # calibrato): non insistiamo alla cieca, torniamo al villaggio nel
+        # modo piu' sicuro gia' noto (stesso tasto usato a fine battaglia).
+        print("[ESERCITO] Non risultiamo al villaggio dopo la selezione, provo a tornarci...")
+        adb_tap(*RETURN_HOME_BUTTON)
+        time.sleep(1.6)
+        if not is_home_screen():
+            print("[ESERCITO] Ancora non al villaggio: proseguo comunque, verra' ritentato dal normale recovery di run_attack().")
+            return False
+
+    print("[ESERCITO] Formazione 'Esercito 1' selezionata.")
+    return True
+
+
 def run_attack():
     """Un ciclo completo: cerca avversario, valuta, attacca, aspetta la
     fine della battaglia, torna al villaggio. Ogni fase verifica lo stato
@@ -2119,6 +2246,9 @@ def main():
     # leggere le risorse, invece di fidarci ciecamente del tempo fisso gia'
     # atteso dal .bat.
     print("[HOME] Attendo che il villaggio sia pronto...")
+    if _check_and_handle_app_update():
+        print("[HOME] Aggiornamento gestito, aspetto che il villaggio ricarichi...")
+
     home_ready = False
     for _ in range(15):
         if is_home_screen():
@@ -2133,6 +2263,14 @@ def main():
     if home_ready:
         print("[VILLAGGIO] Controllo di essere sul villaggio primario...")
         switch_to_village("primario")
+
+        try:
+            ensure_correct_army()
+        except Exception as e:
+            # Comodita' non essenziale: un problema qui non deve mai far
+            # fallire l'avvio della sessione (a differenza di switch_to_village,
+            # che se fallisce blocca gia' tutto piu' sopra).
+            print(f"[ESERCITO] Errore nel controllo esercito, proseguo comunque: {e}")
     else:
         print("[VILLAGGIO] Non risultiamo su una schermata home dopo l'attesa, salto il controllo villaggio.")
 
