@@ -36,7 +36,7 @@ def print(*args, **kwargs):
 
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.18"
+VERSION = "3.19"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -1383,6 +1383,56 @@ def _check_and_handle_app_update(max_wait_seconds=120):
     return True
 
 
+# v3.19 (2026-08-17, segnalato dal vivo dall'utente): se il villaggio e'
+# stato attaccato mentre il bot/gioco era spento, al rientro compare un
+# popup modale "È bello rivederti, capo!" con il riepilogo dell'attacco
+# subito e un tasto "OK" verde in basso al centro. Il problema: la barra in
+# basso a sinistra (incluso ATTACK_BUTTON) resta visibile SOTTO il popup,
+# quindi il pixel controllato da is_home_screen() legge comunque "home" -
+# il bot procedeva alla cieca nella sequenza di attacco mentre il popup
+# modale (che blocca comunque il touch, anche dove il pulsante e' visibile
+# sotto) assorbiva i tap, mandando in confusione tutta la sequenza di avvio
+# ("si sminchiano i comandi", come descritto dall'utente). Rilevato via
+# template matching a posizione fissa (e' un dialog, non un elemento di
+# mondo di gioco soggetto a zoom/pan) invece che OCR: il testo e' nel font
+# stilizzato del gioco su un nastro decorativo, poco affidabile con
+# Tesseract - stesso ragionamento gia' fatto per la barca in
+# switch_to_village(). Calibrato dal vivo su uno screenshot reale con un
+# attacco reale subito.
+WELCOME_BACK_BANNER_REGION = {"left": 250, "top": 80, "width": 1420, "height": 110}
+WELCOME_BACK_OK_BUTTON = (980, 900)
+WELCOME_BACK_MATCH_MIN_CONFIDENCE = 0.7
+WELCOME_BACK_BANNER_REF_FILE = "welcome_back_banner_ref.png"
+_welcome_back_banner_ref = cv2.imread(WELCOME_BACK_BANNER_REF_FILE)
+
+
+def _check_welcome_back_popup(frame=None):
+    """Rileva e chiude il popup "È bello rivederti, capo!" (villaggio
+    attaccato mentre eravamo offline). Ritorna True se il popup era
+    presente ed e' stato chiuso, False altrimenti - va richiamata ad ogni
+    iterazione del ciclo di attesa iniziale in main(), non una volta sola,
+    perche' il popup puo' comparire con un piccolo ritardo rispetto al
+    caricamento del villaggio.
+    """
+    if _welcome_back_banner_ref is None:
+        return False
+    if frame is None:
+        frame = adb_screenshot()
+    r = WELCOME_BACK_BANNER_REGION
+    crop = frame[r["top"]:r["top"] + r["height"], r["left"]:r["left"] + r["width"]]
+    if crop.shape[:2] != _welcome_back_banner_ref.shape[:2]:
+        return False
+    result = cv2.matchTemplate(crop, _welcome_back_banner_ref, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(result)
+    if max_val < WELCOME_BACK_MATCH_MIN_CONFIDENCE:
+        return False
+
+    print(f"[POPUP] Rilevato popup 'È bello rivederti, capo!' (match {max_val:.2f}), tocco OK...")
+    adb_tap(*WELCOME_BACK_OK_BUTTON)
+    time.sleep(1.5)
+    return True
+
+
 def _check_reconnect_dialog():
     """True se il dialog nativo 'connessione interrotta per inattivita'' e'
     presente - manda anche una foto via Telegram per farlo vedere subito
@@ -2251,6 +2301,7 @@ def main():
 
     home_ready = False
     for _ in range(15):
+        _check_welcome_back_popup()
         if is_home_screen():
             home_ready = True
             break
