@@ -128,8 +128,10 @@ def cmd_villaggio_secondario():
     _state["village"] = "secondario"
     send_message(
         "🏗️ Villaggio Secondario selezionato.\n"
-        "Bot v0.13: attacco (doppio raid) ad ogni ciclo, raccolta elisir "
-        "ogni 10 cicli, upgrade mura ogni 20 cicli - tutto automatico."
+        "Attacco (doppio raid) fino a una sessione di 28-34 cicli scelta a "
+        "caso, raccolta elisir ogni 5 cicli (e all'ultimo della sessione) - "
+        "tutto automatico. Upgrade mura disattivato (v0.31, non si "
+        "comportava bene in produzione)."
     )
 
 
@@ -201,11 +203,13 @@ def cmd_muraoff():
 def cmd_mura_toggle():
     """Bottone unico che alterna lo stato invece di due comandi separati
     (/muraon, /muraoff restano comunque disponibili per chi preferisce
-    il testo). Non ha senso per il villaggio secondario: non ha ancora
-    un concetto di upgrade mura automatico.
+    il testo). Non ha senso per il villaggio secondario: quel bot ha un
+    proprio upgrade mura interno (WALL_UPGRADE_ENABLED in
+    bot_costruttori.py), non collegato a queste impostazioni - e da v0.31
+    è disattivato del tutto (non si comportava bene in produzione).
     """
     if _state["village"] == "secondario":
-        send_message("🚧 Il Villaggio Secondario non ha ancora un upgrade mura attivabile/disattivabile: parte da solo ogni 20 cicli.")
+        send_message("🚧 Il Villaggio Secondario ha l'upgrade mura disattivato (v0.31, non si comportava bene in produzione) - non ancora attivabile da qui.")
         return
     settings = bot_control.get_settings()
     settings["auto_wall_upgrade"] = not settings.get("auto_wall_upgrade", False)

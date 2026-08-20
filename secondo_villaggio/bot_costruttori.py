@@ -149,6 +149,98 @@ crash immediato. Fix: rimosso il blocco duplicato. Confermato dal vivo
 (riavvio via task Windows `CoCBotCostruttori`): il bot resta in
 esecuzione ed esegue normalmente un ciclo di attacco.
 
+v0.31 (2026-08-18), quattro richieste esplicite dell'utente nella stessa
+sessione, nessun bug:
+1. **Upgrade mura disattivato** (`WALL_UPGRADE_ENABLED = False`) - non si
+   comporta bene in produzione. Flag invece di rimuovere il codice, per
+   poterlo riattivare in futuro se viene reso più affidabile. Il
+   villaggio secondario non aveva comunque un toggle Telegram dedicato
+   (`/muraon`/`/muraoff` controllano solo il villaggio primario) - il
+   messaggio di `cmd_villaggio_secondario()`/`cmd_mura_toggle()` in
+   `minipc/telegram_relay.py` è stato aggiornato di conseguenza.
+2. **Sessione a lunghezza casuale** invece di loop infinito: prima
+   `--cycles 0` (quello lanciato in produzione da
+   `run_bot_costruttori.bat`, mai cambiato) significava "continua finché
+   non lo fermi tu" - nessun tetto di sicurezza sul numero di attacchi per
+   questo bot (a differenza del villaggio primario, che ha
+   `MAX_TRIGGERS`/`SESSION_DURATION`). Ora sceglie un numero casuale in
+   `SESSION_CYCLES_RANGE = (20, 25)` ad ogni avvio e si ferma da solo a
+   quel numero di attacchi. `--cycles N` (N>0) resta invariato per test
+   manuali con un numero fisso.
+3. **Raccolta elisir anche all'ultimo ciclo della sessione**, non solo ai
+   multipli di `COLLECT_ELIXIR_EVERY` (5) - con una lunghezza sessione
+   casuale l'ultimo ciclo quasi mai coincide con un multiplo di 5,
+   lasciando altrimenti elisir accumulato non raccolto negli ultimi cicli.
+4. **Velocizzazione del deploy e del rilevamento del secondo raid**
+   (richiesta: "ci mette troppo ad accorgersi che è al secondo raid"):
+   `BATTLE_POLL_INTERVAL` 1.5→0.8 (rileva "la battaglia inizia tra" più in
+   fretta, stesso ragionamento di `DAMAGE_POLL_INTERVAL` nel villaggio
+   primario, v3.3), `RAID2_DEPLOY_SETTLE` 1.2→0.7, `CAMERA_SWIPE_DURATION_MS`
+   600→400 (non cambia la posizione finale della camera, solo la velocità
+   dell'animazione), pausa post-swipe in `deploy_wave()` 0.7→0.5,
+   `ABILITY_RETAP_DELAY` 2.0→1.5, `WAIT_BEFORE_DEPLOY` 3.0→2.0. Deliberatamente
+   NON toccati `INTER_TAP_DELAY_RANGE`, il ritardo di selezione slot
+   (0.15-0.22s) e `HERO_TO_FIRST_TROOP_EXTRA_DELAY`: questi sono stati
+   alzati in sessioni passate (v0.25, v0.27) per fixare bug reali di truppe
+   non schierate, ridurli rischierebbe di riaprirli.
+
+v0.32 (2026-08-18, stessa sessione, subito dopo il v0.31): bug reale
+segnalato dal vivo dall'utente mentre guardava la sessione appena avviata -
+"funziona tutto tranne ritirare il carretto, penso che sta messo male,
+basta che si sposta di pochissimo e non lo prendi". Diagnosi dal vivo
+(navigazione manuale via ADB fino al Villaggio Costruttori, rifacendo lo
+stesso swipe di `collect_elixir_cart()`): il carretto si trovava a
+(1265,570) contro l'`ELIXIR_CART_POINT` calibrato (1375,400) - oltre 100px
+di scarto, stesso tema ricorrente di zoom/pan non deterministico già noto
+per la barca (`BOAT_TO_BUILDER/PRIMARY_CANDIDATES`, `_find_boat()`).
+`CART_TAKE_BUTTON`/`CART_CLOSE_BUTTON` sono invece risultati ancora giusti
+(il pannello che si apre è a posizione fissa, solo l'icona sulla mappa si
+sposta). Primo tentativo di fix (finestra di ricerca ristretta intorno al
+punto calibrato, come `_find_boat()` per la barca): **insufficiente**, un
+secondo test dal vivo subito dopo ha mostrato uno scarto ancora più ampio
+(oltre 400px, fuori da qualunque margine ragionevole). Fix finale: nuova
+`_find_elixir_cart()` cerca il carretto via `cv2.matchTemplate`
+(`elixir_cart_ref.png`, ritagliato da uno screenshot reale del carretto
+vuoto) su TUTTO lo screenshot, non in una finestra - verificato offline che
+il template resta ben distinguibile dal resto della scena su tutta
+l'immagine (match 0.98-1.0 su tre screenshot reali col carretto in tre
+posizioni diverse, 0.2-0.4 su schermate senza carretto). Se non trova nulla
+ricade sul vecchio tap puntuale (nessuna regressione). **Non ancora
+osservato dal vivo con nuove ricompense pendenti** (il carretto era a
+0/1.600.000 durante tutti i test, il template è ritagliato sul carretto
+vuoto) - da riverificare se il carretto pieno (con la boccetta di elisir
+viola visibile sopra) cambia troppo l'aspetto per il match; se capita,
+ricalibrare il template su uno screenshot col carretto pieno invece di
+quello vuoto.
+
+**Verificato dal vivo in una sessione di produzione reale** (non solo test
+manuali): match riuscito al ciclo 5 (carretto trovato a (1289,534) contro
+il punto calibrato (1375,400)), ma **fallito al ciclo 10** - lo swipe verso
+l'alto non porta sempre il carretto in vista, a volte lo sposta fuori
+schermo invece di scoprirlo (stesso problema di fondo della barca: lo stato
+della camera prima dello swipe non è consistente). Ritocco nella stessa
+sessione: `collect_elixir_cart()` ora cerca prima il carretto nella vista
+di DEFAULT (senza swipe, il carretto è spesso visibile anche lì) e solo se
+non trovato fa lo swipe e ricerca di nuovo - due tentativi invece di uno,
+nessun tap extra rischioso, prima di ricadere sul punto calibrato. Questo
+ritocco non era ancora nel processo Python già in esecuzione durante il
+test dei cicli 5/10 (entrerà in vigore al prossimo riavvio) - da
+riverificare quale sia il tasso di successo reale con questa versione.
+
+**Dati raccolti a fine sessione (stessa sessione di produzione, ancora con
+la versione a singolo swipe)**: 5 raccolte totali (cicli 5, 10, 15, 20, 23 -
+l'ultimo per via della raccolta forzata a fine sessione), solo **2 su 5
+riuscite via template match** (cicli 5 e 23), le altre 3 ricadute sul tap
+puntuale (probabilmente a vuoto, non verificabile senza controllare
+l'elisir raccolto). Sessione comunque conclusa senza errori/crash - il
+fallback non ha mai causato un problema, solo una raccolta mancata. Il
+ritocco a doppio tentativo sopra (non ancora provato dal vivo in
+produzione) dovrebbe migliorare questo tasso - da confermare al prossimo
+riavvio.
+
+v0.33 (2026-08-20): `SESSION_CYCLES_RANGE` alzato da `(20, 25)` a
+`(28, 34)` su richiesta esplicita dell'utente, nessun bug.
+
 ATTENZIONE - parti ancora da consolidare:
 - Il rilevamento raid1→raid2/risultati combina OCR (`TOP_BANNER_REGION`)
   e un pixel singolo (`RESULTS_SCREEN_CHECK_POINT`), verificati sugli
@@ -190,7 +282,7 @@ def print(*args, **kwargs):
     _builtin_print(f"[{time.strftime('%H:%M:%S')}]", *args, **kwargs)
 
 
-VERSION = "0.30"
+VERSION = "0.33"
 
 
 def find_tesseract_cmd():
@@ -420,10 +512,38 @@ POPUP_SCAN_REGION = {"left": 360, "top": 200, "width": 1200, "height": 680}
 # coordinate (+1.600.000 elisir esatti, confermato confrontando il saldo
 # prima/dopo). Non è la barra risorse della home di default: bisogna prima
 # pannare la camera verso l'alto per farlo comparire sulla destra.
+#
+# v0.32 (2026-08-18): bug reale segnalato dal vivo dall'utente mentre
+# guardava la sessione appena conclusa - "funziona tutto tranne ritirare il
+# carretto, penso che sta messo male, basta che si sposta di pochissimo e
+# non lo prendi". Diagnosi dal vivo: portata la camera sul Villaggio
+# Costruttori e rifatto lo stesso swipe di collect_elixir_cart(), il
+# carretto si trovava a (1265,570) contro l'ELIXIR_CART_POINT calibrato
+# (1375,400) - oltre 100px di scarto, stesso tema ricorrente di zoom/pan non
+# deterministico già noto per la barca (vedi BOAT_TO_BUILDER/PRIMARY_
+# CANDIDATES e _find_boat più sotto). CART_TAKE_BUTTON/CART_CLOSE_BUTTON
+# invece sono risultati ancora giusti (il pannello che si apre è sempre a
+# posizione fissa una volta aperto, solo l'icona sulla mappa si sposta).
+# Fix ispirato a quello della barca ma SENZA finestra di ricerca ristretta
+# intorno al punto calibrato (come invece fa _find_boat): un secondo test
+# dal vivo subito dopo, in un'altra sessione di zoom/pan, ha mostrato uno
+# scarto ancora più ampio (oltre 400px, fuori da qualunque margine
+# ragionevole) - _find_elixir_cart() cerca quindi il carretto via
+# cv2.matchTemplate su TUTTO lo screenshot, non solo vicino al punto
+# calibrato: verificato offline che il template resta comunque ben
+# distinguibile dal resto della scena (match 0.98-1.0 su tre screenshot
+# reali col carretto in tre posizioni diverse, 0.2-0.4 su schermate senza
+# carretto) - un margine di ricerca qui avrebbe solo aggiunto un altro
+# valore arbitrario da sbagliare. Se il match fallisce, ricade sul vecchio
+# tap puntuale (nessuna regressione).
 CART_SWIPE_UP = ((960, 300), (960, 700))
 ELIXIR_CART_POINT = (1375, 400)
 CART_TAKE_BUTTON = (1410, 910)      # "Prendi" - sicuro anche senza nuove ricompense
 CART_CLOSE_BUTTON = (1620, 105)     # X in alto a destra del popup
+CART_MATCH_SCALES = (0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15)
+CART_MATCH_MIN_CONFIDENCE = 0.6
+ELIXIR_CART_REF_FILE = "elixir_cart_ref.png"
+_elixir_cart_ref = cv2.imread(ELIXIR_CART_REF_FILE)
 
 # Popup non documentato prima d'ora, comparso in modo consistente ad ENTRAMBI
 # i tentativi di attacco del test dal vivo del 2026-07-30 (subito dopo
@@ -439,7 +559,10 @@ OBSTRUCTED_LAYOUT_OK_POINT = (1180, 695)
 # confermato coerente su basi diverse.
 CAMERA_SWIPE_START = (960, 700)
 CAMERA_SWIPE_END = (960, 250)
-CAMERA_SWIPE_DURATION_MS = 600
+CAMERA_SWIPE_DURATION_MS = 400  # v0.31 (2026-08-18): ridotto da 600 su richiesta esplicita
+                                # dell'utente - la durata del drag non cambia la posizione
+                                # finale della camera (drag 1:1, non a inerzia, vedi
+                                # commento sotto), solo la velocità dell'animazione
 # Calibrato dal vivo il 2026-07-30 (non a occhio, più iterazioni):
 # (960,600)->(960,300) [delta -300px] schierava solo parte delle truppe.
 # (960,750)->(960,150) [delta -600px, doppio] si è rivelato ECCESSIVO: la
@@ -470,10 +593,17 @@ UNIT_SLOTS_X = [195, 355, 515, 675, 835, 995, 1155, 1315, 1475]
 # alternati tra le unità, non serve un punto diverso per ognuna.
 DEPLOY_POINTS = [(1200, 720), (1360, 560)]
 
-WAIT_BEFORE_DEPLOY = 3.0  # dopo "Cerca!": NON aspettare il countdown pieno
+WAIT_BEFORE_DEPLOY = 2.0  # dopo "Cerca!": NON aspettare il countdown pieno
                           # (~40s) - il tempo di battaglia rischia di scadere
-                          # prima di finire lo schieramento (visto dal vivo)
-ABILITY_RETAP_DELAY = 2.0  # attesa prima di ri-toccare le icone per le abilità
+                          # prima di finire lo schieramento (visto dal vivo).
+                          # v0.31 (2026-08-18): ridotto da 3.0 su richiesta
+                          # esplicita dell'utente ("velocizzare il deploy") -
+                          # non tocca il ritmo tra i singoli tap di
+                          # schieramento (quello resta invariato, e' li' che
+                          # sono stati trovati i bug di truppe perse in
+                          # passato), solo l'attesa fissa prima di iniziare.
+ABILITY_RETAP_DELAY = 1.5  # attesa prima di ri-toccare le icone per le abilità
+                           # v0.31: ridotto da 2.0, stessa richiesta di sopra
 # v0.25: alzati leggermente (erano 0.2-0.4) - l'utente ha notato dal vivo che
 # a volte una truppa in mezzo alla barra (non sempre la prima) non risulta
 # schierata dopo un doppio raid, anche con la pausa di assestamento
@@ -495,8 +625,15 @@ BATTLE_WAIT_SECONDS = 155.0
 # RAID2_PREVIEW_MAX_WAIT (v0.20, attesa attiva prima di schierare sul secondo
 # raid) rimossa in v0.23 su richiesta esplicita dell'utente - vedi commento
 # in run_double_raid() sopra la seconda chiamata a deploy_wave().
-RAID2_DEPLOY_SETTLE = 1.2  # v0.24: breve pausa di assestamento prima di deploy_wave()
-                           # sul secondo raid - vedi commento in run_double_raid()
+RAID2_DEPLOY_SETTLE = 0.7  # v0.24: breve pausa di assestamento prima di deploy_wave()
+                           # sul secondo raid - vedi commento in run_double_raid().
+                           # v0.31 (2026-08-18): ridotto da 1.2 su richiesta esplicita
+                           # dell'utente ("ci mette troppo ad accorgersi del secondo
+                           # raid") - la causa vera del problema di schieramento sul
+                           # secondo raid era lo zoom perso (v0.26, fix _dezoom_camera()),
+                           # non questa pausa: questo valore serve solo a dare il tempo
+                           # alla UI di diventare cliccabile dopo la transizione, quindi
+                           # ridurlo non rischia di riaprire quel bug specifico.
 
 # v0.3: rilevamento attivo di fine battaglia invece di un'attesa fissa.
 # Nel primo test autonomo reale (2026-07-30) l'attesa fissa ha fatto
@@ -528,7 +665,13 @@ TOP_BANNER_REGION = {"left": 650, "top": 10, "width": 650, "height": 90}
 # trovato per la schermata di fine dei due raid.
 RESULTS_SCREEN_CHECK_POINT = (195, 990)
 RESULTS_SCREEN_MAX_BRIGHTNESS = 30
-BATTLE_POLL_INTERVAL = 1.5
+BATTLE_POLL_INTERVAL = 0.8  # v0.31 (2026-08-18): ridotto da 1.5 su richiesta esplicita
+                            # dell'utente - il bot poteva metterci fino a 1.5s in più a
+                            # rendersi conto che "la battaglia inizia tra" era comparso
+                            # (si accorge del secondo raid solo al prossimo poll), un
+                            # controllo più frequente riduce questo ritardo nascosto
+                            # (stesso ragionamento già fatto per DAMAGE_POLL_INTERVAL nel
+                            # bot del villaggio primario, v3.3)
 
 MAX_CONSECUTIVE_ERRORS = 3
 
@@ -663,6 +806,33 @@ def _find_boat(frame, template, around_point, margin=BOAT_MATCH_SEARCH_MARGIN):
     if best_val < BOAT_MATCH_MIN_CONFIDENCE:
         return None
     return (l + best_loc[0] + best_size[0] // 2, t + best_loc[1] + best_size[1] // 2)
+
+
+def _find_elixir_cart(frame):
+    """v0.32: cerca il carretto elisir su TUTTO lo screenshot via
+    cv2.matchTemplate a scale diverse (CART_MATCH_SCALES) - non in una
+    finestra ristretta intorno a un punto calibrato come _find_boat(), vedi
+    commento sopra ELIXIR_CART_POINT sul perché (scarto osservato dal vivo
+    troppo grande e incostante per un margine fisso). Ritorna il centro
+    assoluto del miglior match se sopra CART_MATCH_MIN_CONFIDENCE,
+    altrimenti None (il chiamante ricade sul tap puntuale)."""
+    template = _elixir_cart_ref
+    if template is None:
+        return None
+    th, tw = template.shape[:2]
+    best_val, best_loc, best_size = -1.0, None, None
+    for scale in CART_MATCH_SCALES:
+        sw, sh = max(1, int(tw * scale)), max(1, int(th * scale))
+        if sw >= frame.shape[1] or sh >= frame.shape[0]:
+            continue
+        resized = cv2.resize(template, (sw, sh))
+        result = cv2.matchTemplate(frame, resized, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val > best_val:
+            best_val, best_loc, best_size = max_val, max_loc, (sw, sh)
+    if best_val < CART_MATCH_MIN_CONFIDENCE:
+        return None
+    return (best_loc[0] + best_size[0] // 2, best_loc[1] + best_size[1] // 2)
 
 
 def _home_pixel_says_home():
@@ -1423,11 +1593,42 @@ def collect_elixir_cart():
     propri attacchi). Va chiamata dalla home del Villaggio Costruttori.
     Sicura da chiamare anche se non ci sono nuove ricompense: "Prendi"
     resta cliccabile senza alcun effetto collaterale in quel caso.
+
+    v0.32: prima di tappare, cerca il carretto via template matching su
+    tutto lo screenshot (_find_elixir_cart()) - l'icona sulla mappa si
+    sposta con lo zoom/pan della camera, anche di molto (bug reale
+    segnalato dal vivo, vedi commento su ELIXIR_CART_POINT), a differenza
+    del pannello che si apre dopo (CART_TAKE_BUTTON/CART_CLOSE_BUTTON
+    restano affidabili una volta aperto). Se il match fallisce, ricade sul
+    vecchio tap puntuale.
+
+    v0.32 (ritocco, stessa sessione): un primo test dal vivo in produzione
+    ha mostrato il match riuscire al ciclo 5 ma fallire al ciclo 10 - lo
+    swipe verso l'alto non porta sempre il carretto in vista (a volte lo
+    manda fuori schermo invece di scoprirlo, dipende da dove si trovava
+    prima). Osservato offline che il carretto è spesso visibile ANCHE
+    nella vista di default, senza swipe. Ora si cerca prima lì (nessun tap
+    extra, solo uno screenshot in più) e solo se non trovato si fa lo
+    swipe e si ricerca di nuovo - due possibilità invece di una sola,
+    prima di ricadere sul tap puntuale.
     """
-    print("[CARRETTO] Cerco il carretto elisir (pan camera verso l'alto)...")
-    adb_swipe(CART_SWIPE_UP[0][0], CART_SWIPE_UP[0][1], CART_SWIPE_UP[1][0], CART_SWIPE_UP[1][1])
-    time.sleep(1.0)
-    adb_tap(*ELIXIR_CART_POINT)
+    print("[CARRETTO] Cerco il carretto elisir...")
+    found = _find_elixir_cart(adb_screenshot())
+    if found is None:
+        print("[CARRETTO] Non visibile nella vista attuale, pan camera verso l'alto...")
+        adb_swipe(CART_SWIPE_UP[0][0], CART_SWIPE_UP[0][1], CART_SWIPE_UP[1][0], CART_SWIPE_UP[1][1])
+        time.sleep(1.0)
+        found = _find_elixir_cart(adb_screenshot())
+    if found is not None:
+        print(f"[CARRETTO] Carretto trovato via template match a {found} (punto calibrato {ELIXIR_CART_POINT}).")
+        adb_tap(*found)
+    else:
+        # A questo punto la camera è già nello stato "swiped" (il ramo
+        # sopra ha fatto lo swipe se il primo tentativo senza swipe non
+        # aveva trovato nulla) - nessun altro swipe qui, solo il tap sul
+        # vecchio punto calibrato per quello stato.
+        print("[CARRETTO] Template match fallito in entrambe le viste, tocco il punto calibrato.")
+        adb_tap(*ELIXIR_CART_POINT)
     time.sleep(1.5)
     print("[CARRETTO] Premo 'Prendi'...")
     adb_tap(*CART_TAKE_BUTTON)
@@ -1477,7 +1678,7 @@ def deploy_wave():
     """
     print("[DEPLOY] Porto la camera in posizione fissa...")
     adb_swipe(CAMERA_SWIPE_START[0], CAMERA_SWIPE_START[1], CAMERA_SWIPE_END[0], CAMERA_SWIPE_END[1], CAMERA_SWIPE_DURATION_MS)
-    time.sleep(0.7)
+    time.sleep(0.5)  # v0.31: ridotto da 0.7, stessa richiesta di velocizzazione sopra
 
     print("[DEPLOY] Schiero le unità...")
     deploy_cycle = itertools.cycle(DEPLOY_POINTS)
@@ -1738,6 +1939,18 @@ def run_double_raid():
 
 COLLECT_ELIXIR_EVERY = 5   # ogni quanti cicli svuotare il carretto elisir (dimezzato da 10, richiesta utente 2026-08-12)
 WALL_UPGRADE_EVERY = 14    # ogni quanti cicli tentare un upgrade mura (da 20, richiesta utente 2026-08-12)
+WALL_UPGRADE_ENABLED = False  # v0.31 (2026-08-18): disattivato su richiesta esplicita
+                               # dell'utente - non funziona bene in produzione (comportamento
+                               # erratico osservato dal vivo). Flag invece di rimuovere il
+                               # codice, cosi' si puo' riattivare in futuro senza riscriverlo
+                               # da zero se/quando viene reso più affidabile.
+
+SESSION_CYCLES_RANGE = (28, 34)  # v0.31: la sessione di produzione ("--cycles 0", vedi
+                                  # run_bot_costruttori.bat) non era più un loop infinito ma
+                                  # un numero di attacchi scelto a caso in questo intervallo
+                                  # ad ogni avvio, su richiesta esplicita dell'utente - vedi main().
+                                  # v0.33 (2026-08-20): range alzato da (20,25) a (28,34), di
+                                  # nuovo su richiesta esplicita dell'utente.
 
 
 def _format_error(e):
@@ -1756,9 +1969,24 @@ def main():
     parser.add_argument(
         "--cycles", type=int, default=1,
         help="Quanti cicli di doppio raid eseguire (default 1, pensato per un primo test supervisionato). "
-             "Usa 0 per un loop continuo (finché non lo fermi tu)."
+             "Usa 0 per una sessione di lunghezza casuale (SESSION_CYCLES_RANGE, v0.31 - prima "
+             "era un loop continuo, cambiato su richiesta esplicita dell'utente)."
     )
     args = parser.parse_args()
+
+    # v0.31 (2026-08-18): --cycles 0 (quello lanciato in produzione da
+    # run_bot_costruttori.bat, mai cambiato) non significa più "loop
+    # infinito" ma "scegli un numero casuale di attacchi in
+    # SESSION_CYCLES_RANGE per questa sessione" - richiesta esplicita
+    # dell'utente, non c'era prima nessun tetto di sicurezza sul numero di
+    # attacchi per questo bot (a differenza del villaggio primario, che ha
+    # MAX_TRIGGERS/SESSION_DURATION). --cycles N (N>0) resta invariato, per
+    # test manuali con un numero fisso.
+    if args.cycles == 0:
+        target_cycles = random.randint(*SESSION_CYCLES_RANGE)
+        print(f"[SESSIONE] Lunghezza scelta a caso per questa sessione: {target_cycles} attacchi.")
+    else:
+        target_cycles = args.cycles
 
     print("[HOME] Attendo che il villaggio sia pronto...")
     home_ready = False
@@ -1780,14 +2008,14 @@ def main():
     else:
         print("[VILLAGGIO] Non risultiamo su una schermata home dopo l'attesa, salto il controllo villaggio.")
 
-    send_telegram(f"🏗️ Bot Villaggio Costruttori v{VERSION} avviato ({'continuo' if args.cycles == 0 else f'{args.cycles} cicli'}).")
+    send_telegram(f"🏗️ Bot Villaggio Costruttori v{VERSION} avviato ({target_cycles} cicli).")
 
     cycle = 0
     consecutive_errors = 0
     try:
-        while args.cycles == 0 or cycle < args.cycles:
+        while cycle < target_cycles:
             cycle += 1
-            print(f"\n[CICLO {cycle}{'' if args.cycles == 0 else f'/{args.cycles}'}]")
+            print(f"\n[CICLO {cycle}/{target_cycles}]")
             try:
                 run_double_raid()
                 consecutive_errors = 0
@@ -1806,14 +2034,23 @@ def main():
             # eventuale errore qui non conta come fallimento del ciclo
             # (l'attacco è comunque andato a buon fine) - loggato e
             # notificato a parte, senza incrementare consecutive_errors.
-            if cycle % COLLECT_ELIXIR_EVERY == 0:
+            #
+            # v0.31 (2026-08-18): raccoglie anche all'ULTIMO ciclo della
+            # sessione (cycle == target_cycles), non solo ai multipli di
+            # COLLECT_ELIXIR_EVERY - richiesta esplicita dell'utente, perché
+            # con target_cycles casuale (SESSION_CYCLES_RANGE) l'ultimo
+            # ciclo quasi mai coincide con un multiplo di 5, lasciando in
+            # sospeso l'elisir accumulato negli ultimi cicli della sessione.
+            if cycle % COLLECT_ELIXIR_EVERY == 0 or cycle == target_cycles:
                 try:
                     collect_elixir_cart()
                 except Exception as e:
                     print(f"[ERRORE] Raccolta elisir fallita al ciclo {cycle}: {_format_error(e)}")
                     send_telegram(f"⚠️ Villaggio Costruttori: raccolta elisir fallita al ciclo {cycle}: {e}")
 
-            if cycle % WALL_UPGRADE_EVERY == 0:
+            # Upgrade mura disattivato (v0.31, WALL_UPGRADE_ENABLED=False) -
+            # vedi commento sulla costante.
+            if WALL_UPGRADE_ENABLED and cycle % WALL_UPGRADE_EVERY == 0:
                 try:
                     try_wall_upgrade()
                 except Exception as e:
