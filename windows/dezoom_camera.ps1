@@ -61,14 +61,18 @@ if (-not $proc -or $proc.MainWindowHandle -eq 0) {
 $rect = New-Object Win32Dezoom+RECT
 [Win32Dezoom]::GetWindowRect($proc.MainWindowHandle, [ref]$rect) | Out-Null
 [Win32Dezoom]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
-Start-Sleep -Milliseconds 500
+Start-Sleep -Milliseconds 250  # 2026-08-20: ridotto da 500 (richiesta di velocizzare il
+                               # bot del Villaggio Costruttori) - solo il cuscinetto per
+                               # portare la finestra in primo piano, NON il tempo di tenuta
+                               # del tasto destro sotto (2500ms, quello resta invariato:
+                               # e' la parte confermata dal vivo che serve per lo zoom).
 
 $cx = [int](($rect.Left + $rect.Right) / 2)
 $cy = [int](($rect.Top + $rect.Bottom) / 2)
 "Click destro tenuto al centro finestra: $cx,$cy (rect $($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom))" | Out-File -FilePath $logFile -Append
 
 [Win32Dezoom]::SetCursorPos($cx, $cy) | Out-Null
-Start-Sleep -Milliseconds 200
+Start-Sleep -Milliseconds 100  # 2026-08-20: ridotto da 200, stesso motivo di sopra
 [Win32Dezoom]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)   # MOUSEEVENTF_RIGHTDOWN
 Start-Sleep -Milliseconds 2500
 [Win32Dezoom]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)   # MOUSEEVENTF_RIGHTUP

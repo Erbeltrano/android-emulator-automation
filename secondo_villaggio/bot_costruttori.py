@@ -241,6 +241,52 @@ riavvio.
 v0.33 (2026-08-20): `SESSION_CYCLES_RANGE` alzato da `(20, 25)` a
 `(28, 34)` su richiesta esplicita dell'utente, nessun bug.
 
+v0.34 (2026-08-20, stessa sessione): richiesta esplicita dell'utente -
+"rendere il bot velocissimo", lasciando a me il compito di capire dove
+tagliare (non un numero specifico indicato). Prima di toccare qualunque
+valore, misurati i tempi REALI su una sessione di produzione live (script
+di analisi che legge i timestamp del log e somma i delta tra le righe, 3
+cicli completi osservati): su una media di ~138s per ciclo (doppio raid),
+**~91s (66%) è animazione di battaglia vera e propria** - il bot la rileva
+già in modo attivo (`wait_for_next_screen()`, poll ogni frazione di
+secondo), non c'è tempo sprecato lì, è il gioco che ci mette quel tempo e
+non è comprimibile da fuori. Dei restanti ~40s di overhead del bot, **~22s
+(più della metà) sono dentro `deploy_wave()`** - ma quasi tutti quei
+ritardi (`INTER_TAP_DELAY_RANGE`, il ritardo di selezione slot,
+`HERO_TO_FIRST_TROOP_EXTRA_DELAY`, il doppio tap sulla prima truppa) sono lì
+apposta per bug reali di truppe non schierate, confermati dal vivo in
+sessioni passate (v0.25, v0.27, v0.28) - **non toccati**, il rischio di
+riaprire quei bug non vale il guadagno.
+
+Tagli applicati (tutte pause generiche di transizione UI, NON legate a bug
+di affidabilità documentati): tap "Attacco!" 1.2→1.0s, tap "Cerca!"
+1.5→1.2s, `WAIT_BEFORE_DEPLOY` 2.0→1.5s, pausa post-swipe camera in
+`deploy_wave()` 0.5→0.3s, `ABILITY_RETAP_DELAY` 1.5→1.0s,
+`RAID2_DEPLOY_SETTLE` 0.7→0.4s, `BATTLE_POLL_INTERVAL` 0.8→0.5s, pause di
+`collect_elixir_cart()` ridotte proporzionalmente. Anche
+`windows/dezoom_camera.ps1`: i due cuscinetti di assestamento (foreground
+window, posizionamento cursore) ridotti da 500+200ms a 250+100ms - **NON
+toccato il tempo di tenuta del tasto destro (2500ms)**, quello è confermato
+dal vivo come il tempo minimo perché il gioco registri lo zoom-out
+completo.
+
+**Un taglio testato dal vivo e SCARTATO**: il tap "Torna al villaggio"
+1.6→1.2s. Su una sessione di verifica reale ha fatto scattare
+`_ensure_home_or_recover()` 3 volte su 4 cicli (falso negativo di
+`is_home_screen()`, la UI non aveva ancora finito di assestarsi dopo il
+tap) - ogni scatto costa ~4s di recovery, molto più dei 0.4s risparmiati.
+Riportato a 1.6s. Lezione: non tutte le pause di transizione erano
+tagliabili quanto sembrava sulla carta, verificato dal vivo prima di
+tenerle.
+
+Risparmio stimato (dopo la correzione sopra): ~3.35s/ciclo, poco più di un
+minuto e mezzo su una sessione da 30 cicli - modesto in assoluto perché il
+collo di bottiglia vero (animazione
+di battaglia) non è nelle mani del bot, ma comunque un taglio reale e
+sicuro su tutto quello che lo è. **Da verificare dal vivo su più cicli**
+che nessuno dei tagli generici (non essendo tutti su valori già toccati in
+passato) causi problemi di affidabilità non ancora visti.
+
 ATTENZIONE - parti ancora da consolidare:
 - Il rilevamento raid1→raid2/risultati combina OCR (`TOP_BANNER_REGION`)
   e un pixel singolo (`RESULTS_SCREEN_CHECK_POINT`), verificati sugli
@@ -282,7 +328,7 @@ def print(*args, **kwargs):
     _builtin_print(f"[{time.strftime('%H:%M:%S')}]", *args, **kwargs)
 
 
-VERSION = "0.33"
+VERSION = "0.34"
 
 
 def find_tesseract_cmd():
@@ -593,7 +639,7 @@ UNIT_SLOTS_X = [195, 355, 515, 675, 835, 995, 1155, 1315, 1475]
 # alternati tra le unità, non serve un punto diverso per ognuna.
 DEPLOY_POINTS = [(1200, 720), (1360, 560)]
 
-WAIT_BEFORE_DEPLOY = 2.0  # dopo "Cerca!": NON aspettare il countdown pieno
+WAIT_BEFORE_DEPLOY = 1.5  # dopo "Cerca!": NON aspettare il countdown pieno
                           # (~40s) - il tempo di battaglia rischia di scadere
                           # prima di finire lo schieramento (visto dal vivo).
                           # v0.31 (2026-08-18): ridotto da 3.0 su richiesta
@@ -602,8 +648,13 @@ WAIT_BEFORE_DEPLOY = 2.0  # dopo "Cerca!": NON aspettare il countdown pieno
                           # schieramento (quello resta invariato, e' li' che
                           # sono stati trovati i bug di truppe perse in
                           # passato), solo l'attesa fissa prima di iniziare.
-ABILITY_RETAP_DELAY = 1.5  # attesa prima di ri-toccare le icone per le abilità
-                           # v0.31: ridotto da 2.0, stessa richiesta di sopra
+                          # v0.34 (2026-08-20): ridotto ulteriormente da 2.0 -
+                          # richiesta esplicita di velocizzare il più
+                          # possibile il bot, analisi timing dal vivo (vedi
+                          # nota v0.34 in cima al file) prima di questo taglio.
+ABILITY_RETAP_DELAY = 1.0  # attesa prima di ri-toccare le icone per le abilità
+                           # v0.31: ridotto da 2.0. v0.34: ridotto ulteriormente
+                           # da 1.5, stessa richiesta di velocizzazione generale
 # v0.25: alzati leggermente (erano 0.2-0.4) - l'utente ha notato dal vivo che
 # a volte una truppa in mezzo alla barra (non sempre la prima) non risulta
 # schierata dopo un doppio raid, anche con la pausa di assestamento
@@ -625,7 +676,7 @@ BATTLE_WAIT_SECONDS = 155.0
 # RAID2_PREVIEW_MAX_WAIT (v0.20, attesa attiva prima di schierare sul secondo
 # raid) rimossa in v0.23 su richiesta esplicita dell'utente - vedi commento
 # in run_double_raid() sopra la seconda chiamata a deploy_wave().
-RAID2_DEPLOY_SETTLE = 0.7  # v0.24: breve pausa di assestamento prima di deploy_wave()
+RAID2_DEPLOY_SETTLE = 0.4  # v0.24: breve pausa di assestamento prima di deploy_wave()
                            # sul secondo raid - vedi commento in run_double_raid().
                            # v0.31 (2026-08-18): ridotto da 1.2 su richiesta esplicita
                            # dell'utente ("ci mette troppo ad accorgersi del secondo
@@ -634,6 +685,8 @@ RAID2_DEPLOY_SETTLE = 0.7  # v0.24: breve pausa di assestamento prima di deploy_
                            # non questa pausa: questo valore serve solo a dare il tempo
                            # alla UI di diventare cliccabile dopo la transizione, quindi
                            # ridurlo non rischia di riaprire quel bug specifico.
+                           # v0.34 (2026-08-20): ridotto ulteriormente da 0.7, stessa
+                           # richiesta di velocizzazione generale.
 
 # v0.3: rilevamento attivo di fine battaglia invece di un'attesa fissa.
 # Nel primo test autonomo reale (2026-07-30) l'attesa fissa ha fatto
@@ -665,13 +718,14 @@ TOP_BANNER_REGION = {"left": 650, "top": 10, "width": 650, "height": 90}
 # trovato per la schermata di fine dei due raid.
 RESULTS_SCREEN_CHECK_POINT = (195, 990)
 RESULTS_SCREEN_MAX_BRIGHTNESS = 30
-BATTLE_POLL_INTERVAL = 0.8  # v0.31 (2026-08-18): ridotto da 1.5 su richiesta esplicita
+BATTLE_POLL_INTERVAL = 0.5  # v0.31 (2026-08-18): ridotto da 1.5 su richiesta esplicita
                             # dell'utente - il bot poteva metterci fino a 1.5s in più a
                             # rendersi conto che "la battaglia inizia tra" era comparso
                             # (si accorge del secondo raid solo al prossimo poll), un
                             # controllo più frequente riduce questo ritardo nascosto
                             # (stesso ragionamento già fatto per DAMAGE_POLL_INTERVAL nel
-                            # bot del villaggio primario, v3.3)
+                            # bot del villaggio primario, v3.3). v0.34: ridotto ulteriormente
+                            # da 0.8, stessa richiesta di velocizzazione generale
 
 MAX_CONSECUTIVE_ERRORS = 3
 
@@ -1617,7 +1671,7 @@ def collect_elixir_cart():
     if found is None:
         print("[CARRETTO] Non visibile nella vista attuale, pan camera verso l'alto...")
         adb_swipe(CART_SWIPE_UP[0][0], CART_SWIPE_UP[0][1], CART_SWIPE_UP[1][0], CART_SWIPE_UP[1][1])
-        time.sleep(1.0)
+        time.sleep(0.8)  # v0.34: ridotto da 1.0, vedi nota di velocizzazione generale in cima al file
         found = _find_elixir_cart(adb_screenshot())
     if found is not None:
         print(f"[CARRETTO] Carretto trovato via template match a {found} (punto calibrato {ELIXIR_CART_POINT}).")
@@ -1629,12 +1683,12 @@ def collect_elixir_cart():
         # vecchio punto calibrato per quello stato.
         print("[CARRETTO] Template match fallito in entrambe le viste, tocco il punto calibrato.")
         adb_tap(*ELIXIR_CART_POINT)
-    time.sleep(1.5)
+    time.sleep(1.2)  # v0.34: ridotto da 1.5
     print("[CARRETTO] Premo 'Prendi'...")
     adb_tap(*CART_TAKE_BUTTON)
-    time.sleep(1.5)
+    time.sleep(1.2)  # v0.34: ridotto da 1.5
     adb_tap(*CART_CLOSE_BUTTON)
-    time.sleep(1.0)
+    time.sleep(0.8)  # v0.34: ridotto da 1.0
 
 
 DEZOOM_SCRIPT_PATH = r"C:\Users\simon\dezoom_camera.ps1"
@@ -1678,7 +1732,8 @@ def deploy_wave():
     """
     print("[DEPLOY] Porto la camera in posizione fissa...")
     adb_swipe(CAMERA_SWIPE_START[0], CAMERA_SWIPE_START[1], CAMERA_SWIPE_END[0], CAMERA_SWIPE_END[1], CAMERA_SWIPE_DURATION_MS)
-    time.sleep(0.5)  # v0.31: ridotto da 0.7, stessa richiesta di velocizzazione sopra
+    time.sleep(0.3)  # v0.31: ridotto da 0.7. v0.34: ridotto ulteriormente da 0.5,
+                     # stessa richiesta di velocizzazione generale
 
     print("[DEPLOY] Schiero le unità...")
     deploy_cycle = itertools.cycle(DEPLOY_POINTS)
@@ -1798,7 +1853,7 @@ def run_double_raid():
     # già di ripartire da una home pulita, quindi non serve più.
     print("[ATTACK] Tocco 'Attacco!'...")
     adb_tap(*ATTACK_BUTTON)
-    time.sleep(1.2)
+    time.sleep(1.0)  # v0.34: ridotto da 1.2, vedi nota di velocizzazione generale in cima al file
 
     # v0.21: se il tap su "Attacco!" non ha aperto nulla (siamo ancora sulla
     # home), non procedere alla cieca con Cerca!/deploy_wave() - prima
@@ -1820,7 +1875,7 @@ def run_double_raid():
 
     print("[ATTACK] Tocco 'Cerca!'...")
     adb_tap(*SEARCH_BUTTON)
-    time.sleep(1.5)
+    time.sleep(1.2)  # v0.34: ridotto da 1.5, vedi nota di velocizzazione generale in cima al file
 
     print("[ATTACK] Confermo l'eventuale popup 'Disposizione difensiva ostruita'...")
     adb_tap(*OBSTRUCTED_LAYOUT_OK_POINT)
@@ -1895,7 +1950,12 @@ def run_double_raid():
 
     print("[ATTACK] Torno al villaggio...")
     adb_tap(*RETURN_HOME_BUTTON)
-    time.sleep(1.6)
+    time.sleep(1.6)  # v0.34: un primo tentativo di ridurlo a 1.2 ha causato dal vivo
+                     # _ensure_home_or_recover() a scattare 3 volte su 4 cicli (falso
+                     # negativo di is_home_screen(), la UI non aveva ancora finito di
+                     # assestarsi) - ogni scatto costa ~4s di recovery, molto più dei
+                     # 0.4s risparmiati. Riportato al valore originale, non tutte le
+                     # pause di transizione erano tagliabili quanto sembrava.
 
     # v0.17: bug vero trovato dal vivo il 2026-08-09, analizzando ogni tap
     # con screenshot di debug dopo ognuno (richiesto esplicitamente
