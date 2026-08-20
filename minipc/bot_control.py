@@ -191,7 +191,21 @@ def _wake_and_wait_reachable(progress):
     invece di aspettare sempre il massimo. Il margine totale di pazienza
     (`WAKE_SSH_RETRIES` alzato da 10 a 14 per compensare) resta uguale o
     superiore a prima: un boot lento non viene abbandonato prima.
+
+    2026-08-20 (richiesta esplicita dell'utente, "se lo trova già acceso
+    non dobbiamo aspettare il WoL"): se il PC risulta già raggiungibile via
+    SSH PRIMA di mandare il magic packet, si salta del tutto sia il
+    Wake-on-LAN che il cuscinetto fisso di `WAKE_INITIAL_WAIT` - capita
+    spesso con avvii ravvicinati (es. il PC non si è ancora rispento da
+    una sessione precedente, o l'utente lo riavvia a mano) e prima si
+    perdevano comunque 12s pieni ad aspettare un risveglio che non
+    serviva.
     """
+    if windows_reachable():
+        progress("✅ PC Windows già acceso e raggiungibile, salto il Wake-on-LAN.")
+        return True
+
+    progress("📡 Sveglio il PC Windows (Wake-on-LAN)...")
     send_magic_packet()
     time.sleep(WAKE_INITIAL_WAIT)
 
@@ -211,7 +225,6 @@ def start_bot(progress=lambda msg: None):
     decide cosa farne (mandarlo su Telegram, appenderlo al log della
     dashboard, ecc). Ritorna True se il bot risulta avviato.
     """
-    progress("📡 Sveglio il PC Windows (Wake-on-LAN)...")
     if not _wake_and_wait_reachable(progress):
         return False
 
@@ -221,7 +234,7 @@ def start_bot(progress=lambda msg: None):
 
     ok, out = ssh_run('schtasks /run /tn "CoCBot"')
     if ok:
-        progress("✅ PC Windows sveglio, bot avviato.")
+        progress("✅ PC Windows pronto, bot avviato.")
         return True
 
     progress(f"⚠️ PC svegliato ma il lancio del task ha dato un problema:\n{out}")
@@ -244,7 +257,6 @@ def start_bot_costruttori(progress=lambda msg: None):
     sbagliato) è gestito dallo script stesso all'avvio, non qui - vedi
     `switch_to_village()` in `bot_costruttori.py`.
     """
-    progress("📡 Sveglio il PC Windows (Wake-on-LAN)...")
     if not _wake_and_wait_reachable(progress):
         return False
 
@@ -254,7 +266,7 @@ def start_bot_costruttori(progress=lambda msg: None):
 
     ok, out = ssh_run('schtasks /run /tn "CoCBotCostruttori"')
     if ok:
-        progress("✅ PC Windows sveglio, bot del Villaggio Costruttori avviato.")
+        progress("✅ PC Windows pronto, bot del Villaggio Costruttori avviato.")
         return True
 
     progress(f"⚠️ PC svegliato ma il lancio del task ha dato un problema:\n{out}")
