@@ -6,6 +6,7 @@ import random
 import re
 import shutil
 import subprocess
+import threading
 import numpy as np
 import cv2
 import pytesseract
@@ -36,7 +37,7 @@ def print(*args, **kwargs):
 
 
 # Aggiornare ad ogni modifica funzionale del bot (anche nel README).
-VERSION = "3.19"
+VERSION = "3.20"
 
 # ==========================
 # CONFIGURAZIONE TELEGRAM
@@ -73,6 +74,22 @@ def send_telegram(message: str):
 
     except Exception as e:
         print("[TELEGRAM] Errore Telegram:", e)
+
+
+def send_telegram_async(message: str):
+    """Come send_telegram, ma non blocca il chiamante.
+
+    v3.20: misurato dal vivo che la sola notifica di avvio poteva impiegare
+    fino a ~10s per il round trip verso l'API Telegram (rete del PC Windows),
+    ritardando di altrettanto il primo attacco della sessione - un ritardo
+    di rete, non di UI di gioco, quindi non ha senso bloccare il ciclo
+    principale per aspettarlo. Usata solo dove perdere la notifica in un
+    crash nella finestra di invio (rarissimo, non un'uscita normale) è un
+    rischio accettabile rispetto al tempo risparmiato; le notifiche di
+    errore/fine sessione restano sincrone (send_telegram), dove
+    l'affidabilità della notifica conta più della rapidità.
+    """
+    threading.Thread(target=send_telegram, args=(message,), daemon=True).start()
 
 
 def send_telegram_photo(path: str, caption: str = ""):
@@ -341,6 +358,7 @@ FIND_MATCH_BUTTON = (335, 800)       # "Trova una partita" (tab Multigiocatore)
 CONFIRM_ATTACK_BUTTON = (1697, 960)  # "Attacco!" nella schermata riepilogo esercito
 SKIP_BUTTON = (1745, 780)            # "Avanti" - scarta l'avversario e ricerca
 RETURN_HOME_BUTTON = (955, 985)      # "Torna al villaggio" a fine battaglia
+RETURN_HOME_MAX_WAIT = 2.5           # tetto per tap, vedi _wait_until_home() (v3.20)
 
 # Controllo esercito a inizio sessione (v3.18, richiesta esplicita
 # dell'utente): la stessa schermata "Il mio esercito" aperta da
@@ -695,6 +713,11 @@ session_start_time = None
 current_phase = "idle"
 scout_progress = None
 
+# v3.20: cache della capacita' massima dei depositi (vedi _get_storage_max),
+# per sessione (nessun reset esplicito necessario: ogni sessione e' un
+# processo Python nuovo).
+_storage_max_cache = {"gold": None, "elixir": None, "dark_elixir": None}
+
 
 def write_status(running):
     """Scrive lo stato corrente su file, letto poi dalla dashboard web."""
@@ -789,6 +812,24 @@ def is_home_screen():
         return False
     time.sleep(0.4)
     return _home_pixel_says_home()
+
+
+def _wait_until_home(max_wait=RETURN_HOME_MAX_WAIT):
+    """Aspetta attivamente di essere tornati al villaggio, invece di un
+    tempo fisso sempre uguale (v3.20). is_home_screen() è già economico (un
+    singolo pixel, non OCR) e fa già una doppia lettura anti falso-positivo
+    al suo interno (vedi sopra), quindi richiamarlo in loop qui non aggiunge
+    lavoro pesante - nel caso comune la UI è pronta ben prima del vecchio
+    tetto fisso, nel caso peggiore max_wait fa comunque da rete di sicurezza.
+    Ritorna True se siamo risultati al villaggio entro max_wait.
+    """
+    started = time.monotonic()
+    while True:
+        if is_home_screen():
+            return True
+        if time.monotonic() - started >= max_wait:
+            return False
+        time.sleep(0.3)
 
 
 # Cambio villaggio (v3.6): Clash of Clans resta sull'ultimo villaggio
@@ -1129,6 +1170,39 @@ def read_storage_max(bar_point, debug_name, tooltip_region=None):
     return int(digits) if digits else None
 
 
+def _get_storage_max(bar_point, debug_name, cache_key, home_value, tooltip_region=None):
+    """Come read_storage_max(), ma riusa il valore gia' letto in questa
+    sessione invece di rifare tap+OCR ad ogni singolo attacco (v3.20).
+
+    storage_is_full() viene chiamata dopo OGNI attacco, e read_storage_max()
+    da sola costa ~1.8s di sleep fissi (apertura/chiusura tooltip) piu' il
+    tempo OCR, PER valuta - misurato dal vivo su una sessione reale: la
+    lettura di oro+elisir max pesava da sola per la maggior parte del tempo
+    "morto" tra la fine di una battaglia e l'inizio dello scouting
+    successivo. La capacita' massima cambia solo quando un deposito finisce
+    di essere potenziato (evento raro dentro una singola sessione di 30-50
+    minuti), quindi rileggerla ad ogni ciclo è quasi sempre lavoro sprecato.
+
+    Il valore in cache resta valido finche' non risulta impossibile:
+    se le risorse gia' in casa (home_value) superano il massimo in cache,
+    e' la prova che il deposito e' stato potenziato (o che la lettura
+    originale in cache era sbagliata) - in quel caso si forza una rilettura
+    live, con lo stesso identico comportamento di sicurezza che
+    storage_is_full() aveva gia' per una lettura "inverosimile". Nessuna
+    perdita di affidabilita' rispetto a prima: anzi, una singola lettura
+    buona messa in cache non e' piu' esposta al bug OCR occasionale sui
+    numeri con separatore delle migliaia visto rileggendo ad ogni ciclo.
+    """
+    cached = _storage_max_cache.get(cache_key)
+    if cached is not None and (home_value is None or home_value <= cached):
+        return cached
+
+    value = read_storage_max(bar_point, debug_name, tooltip_region)
+    if value is not None:
+        _storage_max_cache[cache_key] = value
+    return value
+
+
 def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     """True se ALMENO UNA tra oro ed elisir in casa e' oltre `threshold`
     della propria capacita' massima (letta dal vivo, vedi read_storage_max)
@@ -1184,8 +1258,8 @@ def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     ferma mai.
     """
     home = read_home_resources()
-    gold_max = read_storage_max(GOLD_BAR_POINT, "gold")
-    elixir_max = read_storage_max(ELIXIR_BAR_POINT, "elixir")
+    gold_max = _get_storage_max(GOLD_BAR_POINT, "gold", "gold", home.get("gold"))
+    elixir_max = _get_storage_max(ELIXIR_BAR_POINT, "elixir", "elixir", home.get("elixir"))
 
     if not gold_max or not elixir_max:
         print("[STORAGE] Lettura capacita' massima non riuscita, mi affido al tetto di sicurezza sul numero di attacchi.")
@@ -1251,7 +1325,7 @@ def storage_is_full(threshold=STORAGE_FULL_THRESHOLD):
     # valute: se la lettura del massimo fallisce o risulta inverosimile
     # (minore di quanto gia' in casa - es. una lettura OCR "fantasma" con una
     # cifra di troppo), NON si considera pieno, si continua a farmare.
-    dark_elixir_max = read_storage_max(DARK_ELIXIR_BAR_POINT, "dark_elixir", DARK_ELIXIR_MAX_TOOLTIP_REGION)
+    dark_elixir_max = _get_storage_max(DARK_ELIXIR_BAR_POINT, "dark_elixir", "dark_elixir", dark_elixir, DARK_ELIXIR_MAX_TOOLTIP_REGION)
     if not dark_elixir_max:
         print("[STORAGE] Lettura capacita' massima elisir nero non riuscita, continuo a farmare anche se oro/elisir sono pieni.")
         return False
@@ -2132,34 +2206,36 @@ def ensure_correct_army():
     """
     print("[ESERCITO] Controllo/seleziono la formazione 'Esercito 1' (draghi elettrici)...")
     adb_tap(*ATTACK_BUTTON)
-    time.sleep(1.5)
+    time.sleep(1.3)  # v3.20: ridotto da 1.5, vedi nota di velocizzazione in run_attack()
 
     if is_home_screen():
         print("[ESERCITO] 'Attacco!' non sembra essersi aperto (popup imprevisto?), riprovo...")
         adb_tap(*ATTACK_BUTTON)
-        time.sleep(1.5)
+        time.sleep(1.3)
         if is_home_screen():
             print("[ESERCITO] Ancora al villaggio, salto il controllo esercito per questa sessione.")
             return False
 
     adb_tap(*FIND_MATCH_BUTTON)
-    time.sleep(1.6)
+    time.sleep(1.3)  # v3.20: ridotto da 1.6
     adb_tap(*SAVED_FORMATIONS_TAB)
-    time.sleep(1.2)
+    time.sleep(1.0)  # v3.20: ridotto da 1.2
     adb_tap(*USE_FIRST_ARMY_BUTTON)
-    time.sleep(1.2)
+    time.sleep(1.0)  # v3.20: ridotto da 1.2
     adb_tap(*CLOSE_ARMY_PANEL_BUTTON)
-    time.sleep(1.6)
 
-    if not is_home_screen():
+    # v3.20: attesa attiva (vedi _wait_until_home) invece di un fisso 1.6s
+    # sempre - questo e' esattamente il passaggio "selezione esercito ->
+    # inizio attacchi" che l'utente ha notato dal vivo come piu' lento del
+    # necessario.
+    if not _wait_until_home():
         # Non siamo tornati al villaggio come atteso (es. tap caduto fuori
         # bersaglio a causa di un popup, o layout diverso da quello
         # calibrato): non insistiamo alla cieca, torniamo al villaggio nel
         # modo piu' sicuro gia' noto (stesso tasto usato a fine battaglia).
         print("[ESERCITO] Non risultiamo al villaggio dopo la selezione, provo a tornarci...")
         adb_tap(*RETURN_HOME_BUTTON)
-        time.sleep(1.6)
-        if not is_home_screen():
+        if not _wait_until_home():
             print("[ESERCITO] Ancora non al villaggio: proseguo comunque, verra' ritentato dal normale recovery di run_attack().")
             return False
 
@@ -2184,7 +2260,11 @@ def run_attack():
     # davvero (siamo usciti dal villaggio) prima di proseguire, invece di
     # fidarci ciecamente del solo tempo di attesa.
     adb_tap(*ATTACK_BUTTON)
-    time.sleep(1.2)
+    time.sleep(1.0)  # v3.20: ridotto da 1.2 - stesso taglio gia' fatto per lo
+                      # stesso tap sul Villaggio Costruttori (v0.34), qui e'
+                      # protetto dallo stesso identico controllo/retry sotto
+                      # (is_home_screen()), quindi un occasionale falso
+                      # negativo si autocorregge invece di rompere il ciclo.
 
     if is_home_screen():
         # v3.14: prima di ritentare alla cieca, controlla se il vero motivo
@@ -2212,10 +2292,19 @@ def run_attack():
             return
 
     adb_tap(*FIND_MATCH_BUTTON)
-    time.sleep(1.6)
+    time.sleep(1.3)  # v3.20: ridotto da 1.6, vedi nota di velocizzazione sotto
     adb_tap(*CONFIRM_ATTACK_BUTTON)
     countdown_started_at = time.monotonic()
-    time.sleep(2.5)
+    # v3.20: ridotto da 2.5 - richiesta esplicita dell'utente di velocizzare
+    # i passaggi tra schermate (misurato dal vivo: ~10s fissi ad ogni singolo
+    # attacco solo per aprire la schermata di scouting, non solo al primo
+    # della sessione). find_and_evaluate_opponent() aspetta gia' altri 0.5s
+    # prima della sua prima lettura, e una lettura vuota/sbagliata su questo
+    # primo tentativo e' gia' gestita come "sotto soglia, cerco un altro
+    # avversario" (costa un giro di SKIP_BUTTON in piu', non rompe nulla) -
+    # non e' una soglia protetta da un bug documentato come invece lo e'
+    # BATTLE_START_MAX_WAIT (vedi wait_for_battle_start).
+    time.sleep(1.6)
 
     if not find_and_evaluate_opponent():
         print("[ATTACK] Scouting interrotto, salto questo ciclo.")
@@ -2245,17 +2334,22 @@ def run_attack():
 
     print("[ACTION] Termino la battaglia...")
     adb_tap(*END_BATTLE_BUTTON)
-    time.sleep(1.2)
+    time.sleep(1.0)  # v3.20: ridotto da 1.2
     # Se abbiamo schierato truppe, compare il popup di conferma "Arrendersi?":
     # questo tap non fa nulla se il popup non c'è (tocca lo sfondo del risultato).
     adb_tap(*CONFIRM_END_BATTLE_BUTTON)
-    time.sleep(1.6)
+    time.sleep(1.3)  # v3.20: ridotto da 1.6
 
     print("[ACTION] Torno al villaggio...")
     adb_tap(*RETURN_HOME_BUTTON)
-    time.sleep(1.6)
-    adb_tap(*RETURN_HOME_BUTTON)  # nel caso serva un secondo tap (es. schermata forziere)
-    time.sleep(1.6)
+    if not _wait_until_home():
+        # Secondo tap nel caso serva (es. schermata forziere di fine
+        # battaglia sopra "Torna al villaggio") - v3.20: prima erano due tap
+        # con un'attesa fissa di 1.6s ciascuno sempre, anche quando il primo
+        # tap bastava da solo (caso comune). Ora si aspetta attivamente
+        # (vedi _wait_until_home) e si ritocca solo se davvero serve.
+        adb_tap(*RETURN_HOME_BUTTON)
+        _wait_until_home()
 
 
 def calibrate_coordinates():
@@ -2365,7 +2459,9 @@ def main():
     session_duration = max(300.0, SESSION_DURATION - random.uniform(0, 300))
 
     write_status(running=True)
-    send_telegram(
+    # v3.20: async (vedi send_telegram_async) - il primo attacco non deve
+    # aspettare il round trip verso Telegram solo per una notifica informativa.
+    send_telegram_async(
         f"▶️ Bot avviato (v{VERSION}). Risorsa prioritaria: {priority_resource}. "
         f"Continua finche' i depositi non sono quasi pieni (tetto di sicurezza: "
         f"{session_max_triggers} attacchi o {int(session_duration/60)} minuti)."
