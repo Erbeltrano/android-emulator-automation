@@ -220,6 +220,27 @@ def cmd_mura_toggle():
         send_message("⛔ Upgrade automatico mura disattivato.")
 
 
+def cmd_pausaesame():
+    """Ferma tutto cio' che potrebbe essere visto da un software di
+    proctoring (es. Respondus LockDown Browser) durante un esame fatto sullo
+    stesso PC Windows che fa girare il bot - richiesta esplicita dell'utente
+    (2026-09-01), per poterlo rifare da solo ad ogni esame durante l'anno
+    senza dover chiedere a me ogni volta. Chiama pause_for_exam() (gia'
+    esistente in bot_control.py dal 2026-08-12, prima azionabile solo a
+    mano): ferma bot/BlueStacks/componenti in background, disabilita i task
+    pianificati, rimuove la voce di registro di riavvio automatico. NON
+    tocca il server SSH (vedi nota in bot_control.py): disattivarlo da qui
+    taglierebbe anche questo stesso comando fuori dal PC, rendendo
+    impossibile un /riprendiesame remoto - quel pezzo resta un'azione
+    manuale locale sul PC Windows (script dedicato, vedi windows/).
+    """
+    bot_control.pause_for_exam(progress=send_message)
+
+
+def cmd_riprendiesame():
+    bot_control.resume_after_exam(progress=send_message)
+
+
 def cmd_schermo():
     tmp_path = os.path.join(tempfile.gettempdir(), "coc_screen_relay.png")
     ok, err = bot_control.capture_screen(tmp_path)
@@ -250,6 +271,8 @@ COMMANDS = {
     "/muraon": cmd_muraon,
     "/muraoff": cmd_muraoff,
     BTN_MURA_TOGGLE: cmd_mura_toggle,
+    "/pausaesame": cmd_pausaesame,
+    "/riprendiesame": cmd_riprendiesame,
     "/schermo": cmd_schermo,
     BTN_SCHERMO: cmd_schermo,
     "/menu": cmd_menu,
@@ -279,7 +302,10 @@ def handle_text(text):
             "/schermo - manda uno screenshot dell'emulatore\n"
             "/muraon - attiva l'upgrade automatico mura a fine sessione\n"
             "/muraoff - disattiva l'upgrade automatico mura\n"
-            "(oppure usa il bottone 🧱 Mura ON/OFF, alterna lo stato attuale)"
+            "(oppure usa il bottone 🧱 Mura ON/OFF, alterna lo stato attuale)\n"
+            "/pausaesame - ferma tutto (bot, BlueStacks, avvio automatico) per un esame con proctoring\n"
+            "/riprendiesame - riattiva tutto dopo l'esame\n"
+            "(SSH non viene toccato da questi due comandi - vedi windows/ per lo script locale)"
         )
 
 
@@ -331,6 +357,8 @@ def main():
             {"command": "schermo", "description": "Manda uno screenshot dell'emulatore"},
             {"command": "muraon", "description": "Attiva l'upgrade automatico mura a fine sessione"},
             {"command": "muraoff", "description": "Disattiva l'upgrade automatico mura"},
+            {"command": "pausaesame", "description": "Ferma tutto per un esame con proctoring"},
+            {"command": "riprendiesame", "description": "Riattiva tutto dopo l'esame"},
         ]})
     except Exception as e:
         print(f"[RELAY] Errore setMyCommands: {e}")
