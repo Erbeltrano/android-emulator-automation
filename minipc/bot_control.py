@@ -12,10 +12,10 @@ import socket
 import subprocess
 import time
 
-WINDOWS_MAC = "A8:5E:45:B5:BF:F5"
-WINDOWS_IP = "WINDOWS_PC_IP"  # riservato via app Fastweb il 2026-07-19 (era .89)
-WINDOWS_BROADCAST = "LAN_BROADCAST_IP"
-SSH_USER = "simon"
+WINDOWS_MAC = os.environ.get("WINDOWS_PC_MAC")
+WINDOWS_IP = os.environ.get("WINDOWS_PC_IP")  # riservato via app Fastweb, indirizzo statico via DHCP reservation
+WINDOWS_BROADCAST = os.environ.get("LAN_BROADCAST_IP", "255.255.255.255")
+SSH_USER = os.environ.get("WINDOWS_PC_SSH_USER", "simon")
 SSH_KEY = os.path.expanduser("~/.ssh/coc_bot_win")
 # ControlMaster/ControlPersist: la prima chiamata apre una connessione SSH
 # e la tiene aperta, le successive la riusano invece di rifare da zero
@@ -338,89 +338,6 @@ def stop_bot(progress=lambda msg: None):
     ssh_run('powershell -Command "Get-Process -Name HD-Player -ErrorAction SilentlyContinue | Stop-Process -Force"')
     ssh_run("shutdown /s /t 5 /f")
     progress("✅ Fatto: bot fermato, BlueStacks chiuso, PC in spegnimento.")
-    return True
-
-
-_BLUESTACKS_SERVICES_RUN_KEY_PATH = r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-_BLUESTACKS_SERVICES_RUN_KEY_NAME = "electron.app.BlueStacks Services"
-_BLUESTACKS_SERVICES_RUN_KEY_VALUE = (
-    r'"C:\Users\simon\AppData\Local\Programs\bluestacks-services\BlueStacksServices.exe" --hidden'
-)
-
-
-def _ps_encoded_command(script):
-    """Incapsula uno script PowerShell come -EncodedCommand (UTF-16LE +
-    base64), come da gotcha gia' documentata (SSH da bash + pipe/quote
-    annidate si mangiano a vicenda). Usato solo dove il comando ha
-    virgolette annidate che il pattern `powershell -Command "..."` usato
-    altrove in questo file non reggerebbe (es. il valore della chiave di
-    registro qui sotto, che contiene già virgolette doppie sue)."""
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    return f"powershell -EncodedCommand {encoded}"
-
-
-def pause_for_exam(progress=lambda msg: None):
-    """Ferma bot/BlueStacks e disabilita tutto cio' che potrebbe farli
-    ripartire da soli, SENZA spegnere il PC (a differenza di stop_bot()) -
-    per quando lo stesso PC Windows serve anche per altro (es. esami
-    universitari con software di proctoring, richiesta esplicita
-    dell'utente 2026-08-12) e deve restare acceso e usabile, ma senza
-    nulla di questo progetto in esecuzione o riattivabile per sbaglio (un
-    comando Telegram/dashboard arrivato per errore non deve poter far
-    ripartire nulla finche' non si chiama resume_after_exam()).
-
-    Oltre al bot e all'emulatore vero e proprio (HD-Player), ferma anche
-    componenti BlueStacks che restano attivi in background pure ad
-    emulatore chiuso - scoperto dal vivo il 2026-08-12 controllando cosa
-    girava con HD-Player gia' chiuso: `BlueStacksServices.exe` (il
-    launcher/hub, non l'emulatore) si riavvia da solo ad ogni login
-    Windows tramite una voce nel registro (`HKCU...\\Run`), e `BstkSVC.exe`
-    viene ririlanciato ogni ora dal task pianificato `BlueStacksHelper_nxt`
-    creato da BlueStacks stesso. Tutti e due hanno "bluestacks" nel nome
-    processo/percorso - un rischio concreto se un software di controllo
-    esame scansiona i nomi dei processi in esecuzione. Disabilitare i task
-    (`/disable`) invece di cancellarli e rimuovere solo temporaneamente la
-    voce di registro (ripristinata da `resume_after_exam()`): tutto
-    reversibile con un solo comando, non serve ricreare nulla a mano.
-    """
-    if not windows_reachable():
-        progress("💤 PC Windows già spento, niente da mettere in pausa.")
-        return False
-
-    progress("⏸️ Fermo bot/BlueStacks (compresi i componenti in background) e disabilito l'avvio automatico...")
-    ssh_run('powershell -Command "Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force"')
-    ssh_run('powershell -Command "Get-Process -Name HD-Player -ErrorAction SilentlyContinue | Stop-Process -Force"')
-    ssh_run(
-        'powershell -Command "Get-Process -Name HD-Adb,BstkSVC,BlueStacksServices,BlueStacksAppplayerWeb '
-        '-ErrorAction SilentlyContinue | Stop-Process -Force"'
-    )
-    ssh_run('schtasks /change /tn "CoCBot" /disable')
-    ssh_run('schtasks /change /tn "CoCBotCostruttori" /disable')
-    ssh_run('schtasks /change /tn "BlueStacksHelper_nxt" /disable')
-    ssh_run(_ps_encoded_command(
-        f"Remove-ItemProperty -Path '{_BLUESTACKS_SERVICES_RUN_KEY_PATH}' "
-        f"-Name '{_BLUESTACKS_SERVICES_RUN_KEY_NAME}' -ErrorAction SilentlyContinue"
-    ))
-    progress(
-        "✅ Bot, emulatore e componenti BlueStacks in background fermi, avvio automatico disabilitato. "
-        "Il PC resta acceso e usabile normalmente. Per riprendere: resume_after_exam()."
-    )
-    return True
-
-
-def resume_after_exam(progress=lambda msg: None):
-    """Riabilita tutto cio' che pause_for_exam() ha disattivato: i task
-    pianificati e la voce di registro di BlueStacksServices."""
-    if not windows_reachable():
-        progress("💤 PC Windows spento: riabilito comunque i task, si attiveranno al prossimo avvio raggiungibile.")
-    ssh_run('schtasks /change /tn "CoCBot" /enable')
-    ssh_run('schtasks /change /tn "CoCBotCostruttori" /enable')
-    ssh_run('schtasks /change /tn "BlueStacksHelper_nxt" /enable')
-    ssh_run(_ps_encoded_command(
-        f"Set-ItemProperty -Path '{_BLUESTACKS_SERVICES_RUN_KEY_PATH}' "
-        f"-Name '{_BLUESTACKS_SERVICES_RUN_KEY_NAME}' -Value '{_BLUESTACKS_SERVICES_RUN_KEY_VALUE}'"
-    ))
-    progress("✅ Avvio automatico riabilitato. Il bot può ripartire normalmente da dashboard/Telegram.")
     return True
 
 

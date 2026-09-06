@@ -1,2 +1,6 @@
 TELEGRAM_BOT_TOKEN=il_tuo_token
 TELEGRAM_CHAT_ID=il_tuo_chat_id
+WINDOWS_PC_IP=192.168.1.x
+WINDOWS_PC_MAC=aa:bb:cc:dd:ee:ff
+LAN_BROADCAST_IP=192.168.1.255
+WINDOWS_PC_SSH_USER=il_tuo_utente_windows
