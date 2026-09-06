@@ -1,12 +1,47 @@
-# OCR Bot — Clash of Clans (headless via ADB)
+# Android Emulator Automation — Clash of Clans (headless via ADB)
 
-**Versione:** 3.19 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
+**Versione:** 3.20 (vedi `VERSION` in cima a `BOT_COMPLETO_MAC.py`)
 
-Bot in Python che automatizza il farming in Clash of Clans su BlueStacks (Mac), completamente **in background**: pilota l'emulatore Android via ADB (screenshot + tap/swipe), non lo schermo reale del Mac. Questo significa che BlueStacks può restare minimizzato o nascosto — il bot funziona lo stesso, senza bisogno di vedere nulla a schermo.
+Sistema di automazione distribuito su 3 macchine che pilota un emulatore Android (BlueStacks) in background per giocare a Clash of Clans senza supervisione, con controllo e monitoraggio da remoto.
 
-Invia inoltre notifiche su Telegram all'avvio, alla fine e in caso di interruzione della sessione.
+## Perché questo progetto
 
-⚠️ **Attenzione**: automatizzare gli attacchi in un gioco può violare i termini di servizio del gioco stesso e portare al ban dell'account. Usalo a tuo rischio e solo se sei consapevole delle conseguenze.
+Non è un semplice script che simula click a schermo: è un caso pratico per lavorare su problemi che si incontrano in automazione/infrastruttura reale — comunicazione con un device via ADB, lettura dello stato tramite OCR/computer vision invece di dati strutturati, gestione di processi e servizi su più sistemi operativi, recovery automatico quando qualcosa si blocca, e controllo/monitoraggio da remoto.
+
+## Architettura
+
+```
+┌─────────────┐        SSH / Wake-on-LAN        ┌──────────────────┐        ADB        ┌───────────────┐
+│   Mac        │ ───────────────────────────────▶│  PC Windows       │──────────────────▶│  BlueStacks    │
+│ (sviluppo)   │                                  │  (BOT_COMPLETO_   │  screenshot/tap   │  (Android      │
+└─────────────┘                                  │   MAC.py, 24/7)   │◀──────────────────│   emulator)    │
+                                                   └──────────────────┘                    └───────────────┘
+       ▲                                                    ▲
+       │ comandi remoti (Telegram)                          │ wake / stato / stop
+       │                                                     │
+┌──────────────────────────────────────────────────────────┴───┐
+│  Mini PC sempre acceso — systemd services                     │
+│  • telegram_relay.py  → comandi remoti + notifiche             │
+│  • dashboard.py       → web dashboard con storico sessioni     │
+│  • bot_control.py     → Wake-on-LAN + SSH verso il PC Windows  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Cosa dimostra
+
+- **Automazione di device reali**: controllo di un emulatore Android via ADB (screenshot, tap, swipe), non simulazione di mouse/tastiera sullo schermo
+- **OCR / Computer Vision**: lettura di valori numerici a schermo con Tesseract (tuning di whitelist e PSM mode) e riconoscimento robusto a spostamenti/zoom con `cv2.matchTemplate`
+- **Linux service management**: due servizi `systemd` in produzione (`dashboard.service`, `telegram-relay.service`) con restart automatico e gestione delle variabili d'ambiente
+- **Networking**: Wake-on-LAN per accendere il PC Windows da remoto, connessioni SSH persistenti con retry, watchdog che avvisa se una macchina sparisce dalla rete
+- **Gestione processi/servizi su Windows**: Task Scheduler, chiavi di registro (con backup e ripristino), per mettere in pausa l'intero sistema durante gli esami universitari senza intervento manuale
+- **Controllo remoto**: comandi via bot Telegram, dashboard web con API REST e storico sessioni
+- **Troubleshooting metodico**: ogni bug reale trovato durante l'uso quotidiano è documentato più sotto con causa, fix e verifica dal vivo — 20+ iterazioni tracciate in dettaglio
+
+## Tecnologie
+
+Python 3.10+ · OpenCV · Tesseract OCR (pytesseract) · ADB · systemd · SSH · Wake-on-LAN · Telegram Bot API · Windows Task Scheduler / PowerShell
+
+⚠️ **Nota**: automatizzare gli attacchi in un gioco viola i termini di servizio del gioco stesso e può portare al ban dell'account. Progetto realizzato per uso personale ed esplorazione tecnica — usalo a tuo rischio e solo se sei consapevole delle conseguenze.
 
 ## Come funziona
 
